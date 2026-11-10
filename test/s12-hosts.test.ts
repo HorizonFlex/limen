@@ -247,6 +247,7 @@ test("the launch script quotes a label and a task for both platforms and passes 
 	assert.match(script, /export PATH='\/opt\/homebrew\/bin':"\$PATH"/);
 	assert.match(script, /My Repo/);
 	assert.match(script, /limen\/job-1/);
+	assert.match(script, /export CLAUDE_CODE_OAUTH_TOKEN[\s\S]*ANTHROPIC_OAUTH_TOKEN="\$CLAUDE_CODE_OAUTH_TOKEN"/);
 	const syntax = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
 	assert.equal(syntax.status, 0, syntax.stderr);
 	const decoded = spawnSync(

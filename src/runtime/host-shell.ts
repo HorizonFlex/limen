@@ -354,6 +354,8 @@ function loadOauth(jobId: string): string {
 if [ -f "$oauth" ]; then
   CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '\\n' < "$oauth")
   export CLAUDE_CODE_OAUTH_TOKEN
+  ANTHROPIC_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+  export ANTHROPIC_OAUTH_TOKEN
   rm -f "$oauth"
 fi`;
 }

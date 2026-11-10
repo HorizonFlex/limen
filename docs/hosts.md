@@ -265,7 +265,7 @@ printf '%s\n' acc4 > ~/.claude-accounts/active
 
 At the start of each host job, and again at `limen continue --host`, the seat reads that token.
 
-The token goes to the host on ssh's stdin, into a `0600` file under `/tmp`, then into `CLAUDE_CODE_OAUTH_TOKEN` for that Pi process only. The file is removed before Pi is exec'd, and again when the worktree is cleaned up. It is not an ssh argument, not a job-log line, and not left on the host. The log names the account (`seat Claude account work for this job`) and never the token.
+The token goes to the host on ssh's stdin, into a `0600` file under `/tmp`, then into `CLAUDE_CODE_OAUTH_TOKEN` (the bridge and Claude Code) and `ANTHROPIC_OAUTH_TOKEN` (Pi's own `anthropic` provider) for that Pi process only. Without the second, a job whose model is a plain `anthropic/...` id fails on the host with `No API key found for anthropic`. The file is removed before Pi is exec'd, and again when the worktree is cleaned up. It is not an ssh argument, not a job-log line, and not left on the host. The log names the account (`seat Claude account work for this job`) and never the token.
 
 A quota swap while Pi is already running does not retarget that process. The next `limen continue --host` reads the rotator again and sends the new token. A job with no seat account still runs, and the host's own login is what Claude Code uses; the log says so.
 
