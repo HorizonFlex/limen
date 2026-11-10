@@ -267,6 +267,8 @@ At the start of each host job, and again at `limen continue --host`, the seat re
 
 The token goes to the host on ssh's stdin, into a `0600` file under `/tmp`, then into `CLAUDE_CODE_OAUTH_TOKEN` (the bridge and Claude Code) and `ANTHROPIC_OAUTH_TOKEN` (Pi's own `anthropic` provider) for that Pi process only. Without the second, a job whose model is a plain `anthropic/...` id fails on the host with `No API key found for anthropic`. The file is removed before Pi is exec'd, and again when the worktree is cleaned up. It is not an ssh argument, not a job-log line, and not left on the host. The log names the account (`seat Claude account work for this job`) and never the token.
 
+`limen accounts` prints which account is active and which are spent, as the seat's own tool reports it. A quota message names the reset of the account that failed, and the seat may have switched since, so a coordinator runs this before it waits on that time. Limen keeps no account state of its own. The tool is `claude-account-rotate status`, found on `PATH` or in `~/seat/bin`; `LIMEN_ACCOUNT_STATUS` names another executable that prints a report and takes no arguments, and when set it is the only source.
+
 A quota swap while Pi is already running does not retarget that process. The next `limen continue --host` reads the rotator again and sends the new token. A job with no seat account still runs, and the host's own login is what Claude Code uses; the log says so.
 
 ## GitHub identity on a host

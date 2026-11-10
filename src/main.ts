@@ -1,3 +1,4 @@
+import { accountsCommand } from "./commands/accounts.ts";
 import { boardCommand } from "./commands/board-view.ts";
 import { closeCommand } from "./commands/close.ts";
 import { continueCommand } from "./commands/continue.ts";
@@ -39,6 +40,7 @@ const COMMANDS = {
 	github: githubCommand,
 	group: groupCommand,
 	hosts: hostsCommand,
+	accounts: accountsCommand,
 	spawn: spawnCommand,
 	continue: continueCommand,
 	diff: diffCommand,
@@ -73,6 +75,7 @@ const COMMANDS = {
 	| "github"
 	| "group"
 	| "hosts"
+	| "accounts"
 	| "diff"
 	| "steer"
 	| "stop"
@@ -135,6 +138,7 @@ usage:
   limen prune [--retire [--dry-run]]           # --retire deletes finished, failed, or stopped job records whose branch is landed (ancestor or cherry-pick) or deleted
   limen hosts check <alias>                    # over ssh: Pi, git ls-remote, Claude auth; the seat account is named, never printed
   limen hosts prune [--dry-run]                # delete origin limen/<id> branches of terminal jobs
+  limen accounts                               # which Claude account is active and which are spent, from the seat's own tool; read it before waiting on a quota reset
   limen rule                                    # the seat-wide rules that hold now
   limen rule set NAME --until 90m|12h|3d|"YYYY-MM-DD HH:MM"|ISO [--start-priority 1|2|3] "text"  # one rule for every coordinator; a set or change pings each live coordinator tab once
   limen rule end NAME [reason]                  # end it now; each live coordinator tab gets one end ping, as at its end time
