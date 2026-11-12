@@ -4,9 +4,10 @@ import { appendFile, mkdir, readdir, readFile, rename } from "node:fs/promises";
 import { appendLimenLog, atomicWrite, finalizeJob, isFailedStopReason, textFile } from "../job/record.ts";
 import { enqueueSteer } from "../job/steer-inbox.ts";
 import { recordStreamEvents, type StreamSeen } from "./activity-log.ts";
-import { resolveSeatAccount } from "./claude-account.ts";
+import { resolveNamedAccount, resolveSeatAccount } from "./claude-account.ts";
 import { argvFor, ENGINES, engineRoute } from "./engine.ts";
 import { githubRepo, mintHostToken, missingTokenLine, redactSecrets } from "./github-broker.ts";
+import { recordedAccount } from "./host-account.ts";
 import { INPUTS_DIR, packInputs, recordedInputs } from "./host-inputs.ts";
 import {
 	bundleScript,
@@ -130,7 +131,11 @@ async function pushAndNote(job: RemoteJob): Promise<Delivered> {
 }
 
 async function deliverAccount(job: RemoteJob): Promise<string> {
-	const account = resolveSeatAccount();
+	const wanted = recordedAccount(job.jobDir);
+	const account = wanted ? resolveNamedAccount(wanted) : resolveSeatAccount();
+	if (wanted && !account) {
+		throw new Error(`seat account ${wanted} has no token file; the job was spawned with --account ${wanted}`);
+	}
 	if (!account) {
 		await appendLimenLog(job.jobDir, "no seat Claude account; the host uses its own login");
 		return "";
@@ -139,7 +144,7 @@ async function deliverAccount(job: RemoteJob): Promise<string> {
 	await appendLimenLog(
 		job.jobDir,
 		sent.code === 0
-			? `seat Claude account ${account.name} for this job`
+			? `seat Claude account ${account.name} for this job${wanted ? " (chosen with --account)" : ""}`
 			: `seat Claude account ${account.name} was not delivered`,
 	);
 	return account.token;

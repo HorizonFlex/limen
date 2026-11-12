@@ -267,7 +267,21 @@ At the start of each host job, and again at `limen continue --host`, the seat re
 
 The token goes to the host on ssh's stdin, into a `0600` file under `/tmp`, then into `CLAUDE_CODE_OAUTH_TOKEN` (the bridge and Claude Code) and `ANTHROPIC_OAUTH_TOKEN` (Pi's own `anthropic` provider) for that Pi process only. Without the second, a job whose model is a plain `anthropic/...` id fails on the host with `No API key found for anthropic`. The file is removed before Pi is exec'd, and again when the worktree is cleaned up. It is not an ssh argument, not a job-log line, and not left on the host. The log names the account (`seat Claude account work for this job`) and never the token.
 
-`limen accounts` prints which account is active and which are spent, as the seat's own tool reports it. A quota message names the reset of the account that failed, and the seat may have switched since, so a coordinator runs this before it waits on that time. Limen keeps no account state of its own. The tool is `claude-account-rotate status`, found on `PATH` or in `~/seat/bin`; `LIMEN_ACCOUNT_STATUS` names another executable that prints a report and takes no arguments, and when set it is the only source.
+`limen accounts` prints which account is active and which are spent, as the seat's own tool reports it. A quota message names the reset of the account that failed, and the seat may have switched since, so a coordinator runs this before it waits on that time. Under the report it lists how full each account is: the five-hour and the weekly share used, and when each window resets. Limen reads that with one single-token request per account (the answer carries those figures in its headers, a refused call included), using the token files in `~/.claude-accounts` (`LIMEN_CLAUDE_ACCOUNTS` names another directory). Two files holding the same token are shown as one account. `LIMEN_USAGE_URL` and `LIMEN_USAGE_MODEL` override the endpoint and the model of that request. Limen keeps no account state of its own. The tool is `claude-account-rotate status`, found on `PATH` or in `~/seat/bin`; `LIMEN_ACCOUNT_STATUS` names another executable that prints a report and takes no arguments, and when set it is the only source.
+
+### Choosing the account a host job bills
+
+```bash
+limen spawn --host win --account acc3 "…"     # bill acc3
+limen spawn --host mbp --account auto "…"     # bill the account with the most room right now
+```
+
+- Without `--account` a host job bills the seat's active account, as before. `--account` needs `--host`.
+- A name must match a token file in the accounts directory (an alias of the same token works); an unknown name, or an account with no quota left, is refused at spawn and the message says so.
+- `auto` picks the usable account whose fuller window, five-hour or weekly, is emptiest, and records its name. It fails if none has quota left.
+- The name is recorded in the job folder's `account` file, so `limen continue --host` bills the same account. The token is read from the seat each time, sent over ssh stdin to a 0600 file, and removed once the job reads it; it is never in argv or the log.
+- The job log says which account the job uses. Several jobs may share one account; check `limen accounts` before sending many.
+
 
 A quota swap while Pi is already running does not retarget that process. The next `limen continue --host` reads the rotator again and sends the new token. A job with no seat account still runs, and the host's own login is what Claude Code uses; the log says so.
 

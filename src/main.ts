@@ -122,7 +122,7 @@ usage:
   limen spawn --engine <engine> --provider <provider> --model <model> --thinking <level> --repo R "Implement FNNN: <outcome>. Ticket: spec/features/active/FNNN-slug/ticket.md" [--label L]
   limen spawn --engine <engine> --provider <provider> --model <model> --thinking <level> --review --detached --branch B --label L [--base SHA] [--head SHA] "Review the FNNN candidate against spec/features/active/FNNN-slug/ticket.md"
   limen spawn --engine devin [--provider macos|linux] [--model MODE] "…" [--label L] [--task-file F|-]  # a Devin cloud session on the job branch; detached only, no --thinking
-  limen spawn --host ALIAS "…" [--review --branch B] [--input PATH ...]  # Pi on another machine; --input copies seat files the job reads (to LIMEN_INPUTS); the seat keeps .limen, finalizes, and wakes. See docs/hosts.md
+  limen spawn --host ALIAS "…" [--review --branch B] [--input PATH ...] [--account NAME|auto]  # Pi on another machine; --input copies seat files the job reads (to LIMEN_INPUTS); the seat keeps .limen, finalizes, and wakes. See docs/hosts.md
   limen continue <id|suffix|label> "follow-up" --host ALIAS  # same host pool; the seat still owns the job folder
   limen continue <id|suffix|label> "follow-up instruction" [--review] [--label L] [--engine pi|omp] [--provider P] [--model X] [--thinking T] [--tab|--detached] [--priority 1|2|3; default the parent's] [--extension PATH ...; replaces ordinary Pi list, group list stays fixed]
                                   # resume a finished job in its own engine session — full context, same worktree; Herdr default is hosted
@@ -138,7 +138,7 @@ usage:
   limen prune [--retire [--dry-run]]           # --retire deletes finished, failed, or stopped job records whose branch is landed (ancestor or cherry-pick) or deleted
   limen hosts check <alias>                    # over ssh: Pi, git ls-remote, Claude auth; the seat account is named, never printed
   limen hosts prune [--dry-run]                # delete origin limen/<id> branches of terminal jobs
-  limen accounts                               # which Claude account is active and which are spent, from the seat's own tool; read it before waiting on a quota reset
+  limen accounts                               # which Claude account is active and which are spent, plus 5h/week usage per account; read it before waiting on a quota reset
   limen rule                                    # the seat-wide rules that hold now
   limen rule set NAME --until 90m|12h|3d|"YYYY-MM-DD HH:MM"|ISO [--start-priority 1|2|3] "text"  # one rule for every coordinator; a set or change pings each live coordinator tab once
   limen rule end NAME [reason]                  # end it now; each live coordinator tab gets one end ping, as at its end time
