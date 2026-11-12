@@ -90,7 +90,7 @@ test("queue lists each host's reach, load, and overflow", async () => {
 });
 
 test("prefer needs overflow, takes only seat or hosts, and the pool reports hosts first", () => {
-	const hosts = [{ alias: "win", ssh: "w", platform: "linux", root: "/r" }];
+	const hosts = [{ alias: "win", ssh: "w", platform: "linux", root: "/r", hook: "/h", maxConcurrent: 1 }];
 	assert.equal(parseHostPool({ overflow: true, prefer: "hosts", hosts }, "f").prefer, "hosts");
 	assert.equal(parseHostPool({ overflow: true, hosts }, "f").prefer, "seat");
 	assert.throws(() => parseHostPool({ prefer: "hosts", hosts }, "f"), /needs overflow: true/);
