@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { jobPlace, seatPlace } from "../src/job/place.ts";
 import { completionWake } from "../src/job/wake-text.ts";
-import { hostQueueLines } from "../src/runtime/hosts.ts";
+import { hostQueueLines, parseHostPool } from "../src/runtime/hosts.ts";
 import * as plant from "./plant.ts";
 
 test("jobs, status, and json name the host, and a local job names the seat", async () => {
@@ -87,4 +87,12 @@ test("queue lists each host's reach, load, and overflow", async () => {
 		}
 		await made.cleanup();
 	}
+});
+
+test("prefer needs overflow, takes only seat or hosts, and the pool reports hosts first", () => {
+	const hosts = [{ alias: "win", ssh: "w", platform: "linux", root: "/r", hook: "/h", maxConcurrent: 1 }];
+	assert.equal(parseHostPool({ overflow: true, prefer: "hosts", hosts }, "f").prefer, "hosts");
+	assert.equal(parseHostPool({ overflow: true, hosts }, "f").prefer, "seat");
+	assert.throws(() => parseHostPool({ prefer: "hosts", hosts }, "f"), /needs overflow: true/);
+	assert.throws(() => parseHostPool({ overflow: true, prefer: "all", hosts }, "f"), /"seat" or "hosts"/);
 });
