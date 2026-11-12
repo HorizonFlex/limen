@@ -341,13 +341,28 @@ limen stop <id> enough
 ssh mbp 'pgrep -af "limen: sandbox" || echo stopped'
 ```
 
+## Files a host job reads and writes
+
+A host has its own disk, so a seat path such as a scratch folder does not exist there, and a seat disk is never mounted on a host. The coordinator names what the job reads, and Limen copies exactly that:
+
+```bash
+limen spawn --host win --input /Users/agent/scratch/f181 --input /Users/agent/scratch/canary "…"
+```
+
+- `--input PATH` may repeat and needs `--host`. Each path lands under its own name (two paths with the same name are refused), and a folder reached through a link is sent as what it points to. A path that does not exist is refused at spawn.
+- The job reads them under `$LIMEN_INPUTS`, for example `$LIMEN_INPUTS/f181`, on every host and on the seat alike. The task names that variable; Limen does not rewrite paths in the task text.
+- The copy is fresh at every start and at `limen continue --host`. The paths are recorded in the job folder's `inputs` file.
+- What the job writes under `$LIMEN_OUTPUTS` comes back to `<job>/outputs` on the seat when the job ends.
+- Both directions travel inside one ssh script, so each is capped at 32 MB. A larger `--input` is refused at spawn; larger outputs are skipped and the log says so. A job that needs more reads it from git.
+- If the copy fails, the job fails with the reason; it does not start without its inputs.
+
 ## How a job moves
 
 1. The seat creates the job folder and the local worktree, as always, and prints the id.
 2. The wrapper pushes `limen/<id>` (or the review branch) to `origin`, then logs that the host will fetch it.
 3. Over ssh it fetches that branch into the clone of this project, adds a worktree, and writes a minimal `.limen/jobs/<id>/` so the hooks have a folder. `finish` does nothing when that folder is missing; creating it is what makes the handoff stick. Those host lines in the job log start with `[alias]`. The worktree path names the clone.
 4. Pi runs `--mode json` in the worktree. Stdout is parsed on the seat with the same stream parser as a local job, so `log`, `activity`, and `last-tool` update on the mini.
-5. On exit the host pushes the branch. The seat copies `result`, `session-ended`, `session/`, `note.md`, and `note.first.md` back, fetches, and fast-forwards the local worktree (a detached review updates the branch ref too). Then the host worktree and, for a `limen/<id>` branch, that local branch on the host clone are removed.
+5. On exit the host pushes the branch. The seat copies `result`, `session-ended`, `session/`, `note.md`, `note.first.md`, and `outputs/` back, fetches, and fast-forwards the local worktree (a detached review updates the branch ref too). Then the host worktree and, for a `limen/<id>` branch, that local branch on the host clone are removed.
 6. `finalizeJob` runs on the seat. The coordinator wake is the normal one. The host worktree and the temporary job folder are removed.
 
 `limen stop` signals the seat wrapper, which ssh's `kill` for the recorded pid and its children, then finalizes `stopped` on the seat. The wrapper has about four seconds before `limen stop` records the terminal state itself, and five before the process group is killed. That is the same budget a Devin session gets.

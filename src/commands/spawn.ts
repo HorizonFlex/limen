@@ -43,6 +43,7 @@ import {
 	preflightEngine,
 	resolveSpawnEngine,
 } from "../runtime/engine.ts";
+import { INPUTS_FILE, validateInputs } from "../runtime/host-inputs.ts";
 import {
 	assertHostEngine,
 	assertHostProject,
@@ -79,6 +80,7 @@ type SpawnOptions = {
 	engine?: string;
 	extensions: string[];
 	host?: string;
+	inputs?: string[];
 };
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export function resolvePreamble(root: string, role: string): string {
@@ -184,8 +186,10 @@ async function spawnJob(args: readonly string[], cwd: string, group?: SpawnGroup
 	await checkLaunchAuthority(parsed, group);
 	const hosted = chooseHostedLaunch(parsed, group !== undefined);
 	const loaded = await readSpawnTask(parsed.task, parsed.taskFile, cwd);
+	const inputs = await validateInputs(parsed.inputs ?? [], parsed.host, cwd);
 	const options = {
 		...parsed,
+		...(inputs.length > 0 ? { inputs } : {}),
 		task: loaded.text,
 		label: parsed.label ?? (loaded.text.trim().split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "job"),
 	};
@@ -467,6 +471,9 @@ async function publishSpawnedJob(launch: SpawnLaunch, record: SpawnRecord): Prom
 		...(candidate ? { candidate } : {}),
 		...(finishConfig ? { finishConfig } : {}),
 	});
+	if (launch.options.inputs?.length) {
+		await writeFile(`${record.jobDir}/${INPUTS_FILE}`, `${launch.options.inputs.join("\n")}\n`);
+	}
 }
 /** Marks the job running, then starts it in a Herdr pane or as a detached wrapper. */
 async function launchSpawnedJob(launch: SpawnLaunch, job: SpawnedJob): Promise<void> {
@@ -700,6 +707,7 @@ const SPAWN_FLAGS = {
 	head: { type: "string" },
 	extension: { type: "string", multiple: true },
 	host: { type: "string" },
+	input: { type: "string", multiple: true },
 } as const;
 
 function parseSpawnArgs(args: readonly string[]): SpawnOptions {
@@ -746,6 +754,7 @@ function parseSpawnArgs(args: readonly string[]): SpawnOptions {
 	const out: SpawnOptions = {
 		task: taskFile ? "" : task.join(" "),
 		extensions: values.extension ?? [],
+		...(values.input?.length ? { inputs: values.input } : {}),
 		review: values.review ?? false,
 		tab: values.tab ?? false,
 		detached: values.detached ?? false,
