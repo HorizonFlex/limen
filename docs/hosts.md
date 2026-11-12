@@ -71,6 +71,7 @@ Do not `limen spawn` from a clone on the laptop. That would be a second cabinet.
 | `distro` | WSL distribution for `windows-wsl`. Omitted means `Ubuntu`. Ignored on darwin and linux. |
 | `path` | Optional directories prepended to `PATH` for the job. Non-interactive ssh does not load zshrc or nvm. |
 | `model` | Used when `--model` is omitted. A bridged id such as `claude-bridge/claude-sonnet-5-5` is resolved on the host. Omitted means the seat default, which the host may not be logged into. |
+| `prefer` | Top-level, with `overflow: true`. `"hosts"` tries the hosts first even when the seat's gate is open: a host with a clone of the project, room under `maxConcurrent`, and a reading that clears the same gate takes the job, and the seat runs it only when none is free. `"seat"` (the default) keeps the seat first. `limen queue` prints `overflow on, hosts first`. Without `overflow: true`, `prefer: "hosts"` is refused. |
 | `overflow` | Top-level. `true` lets the seat send a job to a free host when the **local** start gate is closed. Omitted or `false` means only an explicit `--host` leaves the seat. |
 | `githubBroker` | Top-level. `command` is the seat's token client, run directly as `<command> owner/repo`. `direct` must be true or omitted. This is read at job start, so a coordinator does not need a restart. |
 | `pruneBranches` | Top-level. `true` deletes `origin/limen/<id>` after that host job fast-forwards. Omitted means leave the branch; `limen hosts prune` deletes it later. |

@@ -25,6 +25,8 @@ export type { HostPlatform, RemoteHost };
 
 export type HostPool = {
 	readonly overflow: boolean;
+	/** `hosts`: try the hosts first, even when the seat's gate is open, and use the seat only when none is free. */
+	readonly prefer: "seat" | "hosts";
 	/** Delete `limen/<id>` on origin after a host job fast-forwards. */
 	readonly pruneBranches: boolean;
 	/** Client that prints a GitHub App token. Absent means auto-detect `~/.local/bin/limen-git-token`. */
@@ -45,7 +47,7 @@ export function hostsFile(): string {
 export function loadHostPool(): HostPool {
 	const path = hostsFile();
 	if (!existsSync(path)) {
-		return { overflow: false, pruneBranches: false, hosts: [], ignored: [] };
+		return { overflow: false, prefer: "seat", pruneBranches: false, hosts: [], ignored: [] };
 	}
 	let parsed: unknown;
 	try {
@@ -111,7 +113,8 @@ export function validateRemoteLaunch(
 /**
  * The host this job runs on, or undefined to stay on the seat. An explicit `LIMEN_HOST` is reserved even when the
  * seat's gate is open. Overflow runs only when that gate is closed and some enabled host is under its cap and its
- * own load clears the same gate.
+ * own load clears the same gate. With `prefer: "hosts"` the seat's gate is not consulted: a host that has room and
+ * clears the gate takes the job, and the seat is the fallback.
  */
 export async function assignedHost(jobDir: string, stop: AbortSignal): Promise<RemoteHost | undefined> {
 	const pool = loadHostPool();
@@ -130,9 +133,11 @@ export async function assignedHost(jobDir: string, stop: AbortSignal): Promise<R
 	if (!gate) {
 		return undefined;
 	}
-	const reading = await readLoad(stop).catch(() => undefined);
-	if (!reading || stop.aborted || readingClears(reading, gate)) {
-		return undefined;
+	if (pool.prefer !== "hosts") {
+		const reading = await readLoad(stop).catch(() => undefined);
+		if (!reading || stop.aborted || readingClears(reading, gate)) {
+			return undefined;
+		}
 	}
 	return overflowHost(jobDir, pool.hosts, project, gate, stop);
 }
@@ -168,6 +173,12 @@ export function parseHostPool(parsed: unknown, path: string): HostPool {
 	if (body.overflow !== undefined && typeof body.overflow !== "boolean") {
 		throw new Error(`${path} overflow must be true or false`);
 	}
+	if (body.prefer !== undefined && body.prefer !== "seat" && body.prefer !== "hosts") {
+		throw new Error(`${path} prefer must be "seat" or "hosts"`);
+	}
+	if (body.prefer === "hosts" && body.overflow !== true) {
+		throw new Error(`${path} prefer "hosts" needs overflow: true`);
+	}
 	if (body.pruneBranches !== undefined && typeof body.pruneBranches !== "boolean") {
 		throw new Error(`${path} pruneBranches must be true or false`);
 	}
@@ -175,7 +186,13 @@ export function parseHostPool(parsed: unknown, path: string): HostPool {
 		throw new Error(`${path} hosts must be an array`);
 	}
 	for (const key of Object.keys(body)) {
-		if (key !== "overflow" && key !== "hosts" && key !== "pruneBranches" && key !== "githubBroker") {
+		if (
+			key !== "overflow" &&
+			key !== "prefer" &&
+			key !== "hosts" &&
+			key !== "pruneBranches" &&
+			key !== "githubBroker"
+		) {
 			ignored.push(key);
 		}
 	}
@@ -190,6 +207,7 @@ export function parseHostPool(parsed: unknown, path: string): HostPool {
 	}
 	return {
 		overflow: body.overflow === true,
+		prefer: body.prefer === "hosts" ? "hosts" : "seat",
 		pruneBranches: body.pruneBranches === true,
 		hosts,
 		ignored,
@@ -669,7 +687,11 @@ export async function hostQueueLines(): Promise<string> {
 	if (pool.hosts.length === 0) {
 		return "hosts: none";
 	}
-	const overflow = pool.overflow ? "overflow on" : "overflow off";
+	const overflow = pool.overflow
+		? pool.prefer === "hosts"
+			? "overflow on, hosts first"
+			: "overflow on"
+		: "overflow off";
 	const lines: string[] = [];
 	for (const host of pool.hosts) {
 		const running = host.enabled ? await runningOnHost(host.alias) : 0;

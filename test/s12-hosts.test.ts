@@ -467,6 +467,29 @@ test("overflow sends a job when the seat gate is closed and a host has room", as
 	}
 });
 
+test("prefer hosts sends a job to a host with room even when the seat gate is open", async () => {
+	const seat = await remotePlant("darwin", "mbp");
+	try {
+		const poolPath = join(seat.made.parent, ".limen", "hosts.json");
+		const { readFileSync } = await import("node:fs");
+		await writeFile(
+			poolPath,
+			readFileSync(poolPath, "utf8").replace('"overflow": false', '"overflow": true, "prefer": "hosts"'),
+		);
+		await writeFile(join(seat.made.parent, "start-reading.json"), '{"cpuIdle":100,"memoryFree":100}\n');
+		const env = {
+			...seat.env,
+			LIMEN_CLAUDE_ACCOUNTS: await seatAccounts(),
+			LIMEN_HOST_READING: '{"cpuIdle":80,"memoryFree":80}',
+		};
+		const id = plant.spawnJob(seat.made, "finish\nfinish hosts first", ["--label", "hostsfirst"], { env });
+		assert.equal(plant.waitJob(seat.made, id, { env }), "done");
+		assert.equal(plant.jobFile(seat.made, id, "host"), "mbp");
+	} finally {
+		await seat.made.cleanup();
+	}
+});
+
 test("a review on a host fast-forwards the candidate and keeps the handoff", async () => {
 	const { made, env, alias } = await remotePlant("darwin", "mbp");
 	try {
