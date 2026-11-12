@@ -7,6 +7,7 @@ import { recordStreamEvents, type StreamSeen } from "./activity-log.ts";
 import { resolveSeatAccount } from "./claude-account.ts";
 import { argvFor, ENGINES, engineRoute } from "./engine.ts";
 import { githubRepo, mintHostToken, missingTokenLine, redactSecrets } from "./github-broker.ts";
+import { INPUTS_DIR, packInputs, recordedInputs } from "./host-inputs.ts";
 import {
 	bundleScript,
 	cleanupScript,
@@ -119,6 +120,7 @@ async function pushAndNote(job: RemoteJob): Promise<Delivered> {
 		await appendLimenLog(job.jobDir, `commit author ${author.name} <${author.email}>`);
 	}
 	await uploadSession(job);
+	await uploadInputs(job);
 	const extras = await readWorkerExtensions(job.jobDir, "pi");
 	if (extras.length > 0) {
 		await appendLimenLog(job.jobDir, `remote host: not loading ${extras.length} seat extension path(s)`);
@@ -445,6 +447,35 @@ async function copyBack(job: RemoteJob): Promise<void> {
 	const extracted = spawnSync("tar", ["-xf", "-", "-C", job.jobDir], { input: Buffer.from(b64, "base64") });
 	if (extracted.status !== 0) {
 		await appendLimenLog(job.jobDir, `remote copy failed: ${extracted.stderr.toString().trim() || extracted.status}`);
+	}
+}
+
+/** The job's `--input` paths, copied fresh into `<jobdir>/inputs` on the host at every start and continue. */
+async function uploadInputs(job: RemoteJob): Promise<void> {
+	const paths = recordedInputs(job.jobDir);
+	const remote = `${remoteLayout(job.host, job.jobId).jobDir}/${INPUTS_DIR}`;
+	const packed = packInputs(paths);
+	const b64 = packed ? packed.toString("base64") : "";
+	const script = `set -eu
+rm -rf ${posixQuote(remote)}
+mkdir -p ${posixQuote(remote)}
+${
+	b64
+		? `node -e 'const c=[];process.stdin.on("data",d=>c.push(d));process.stdin.on("end",()=>process.stdout.write(Buffer.from(Buffer.concat(c).toString().trim(),"base64")))' <<'LIMEN_INPUTS' | tar -C ${posixQuote(remote)} -xf -
+${b64}
+LIMEN_INPUTS`
+		: ""
+}
+`;
+	const sent = await shellText(job.host, script, 120_000);
+	if (sent.code !== 0) {
+		throw new Error(`could not copy --input to ${job.host.alias}: ${sent.stderr.trim() || sent.code}`);
+	}
+	if (paths.length > 0) {
+		await appendLimenLog(
+			job.jobDir,
+			`remote host ${job.host.alias}: copied ${paths.length} input path(s) to LIMEN_INPUTS`,
+		);
 	}
 }
 

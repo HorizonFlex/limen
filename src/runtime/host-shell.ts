@@ -1,8 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { TRANSFER_CAP_BYTES } from "./host-inputs.ts";
 
 // Platform differences for a remote host live here: the ssh command line, quoting, paths, and how a pid is signaled.
 // Darwin and Linux run the script over OpenSSH into bash. Windows OpenSSH's default shell may be cmd.exe or
 // PowerShell, so that command line holds no `$` and the starter is base64. The job itself still runs in WSL bash.
+const TRANSFER_CAP_KB = TRANSFER_CAP_BYTES / 1024;
+
 export type HostPlatform = "darwin" | "linux" | "windows-wsl";
 
 export type HostClone = {
@@ -185,7 +188,7 @@ export function launchScript(input: LaunchScript): string {
 		`jobdir=${posixQuote(jobDir)}`,
 		`wt=${posixQuote(worktree)}`,
 		`branch=${posixQuote(input.branch)}`,
-		`mkdir -p "$jobdir/steer/inbox" "$jobdir/steer/delivered" "$jobdir/session"`,
+		`mkdir -p "$jobdir/steer/inbox" "$jobdir/steer/delivered" "$jobdir/session" "$jobdir/outputs"`,
 		decodeTo(`"$jobdir/task.md"`, "LIMEN_TASK", task),
 		`echo "limen-remote: fetch $branch" >&2`,
 		`git -C "$root" fetch origin "$branch:$branch"`,
@@ -196,6 +199,8 @@ export function launchScript(input: LaunchScript): string {
 		`git -C "$root" worktree add "$wt" "$branch"`,
 		`echo "limen-remote: worktree $wt" >&2`,
 		"export LIMEN_JOB=1",
+		'export LIMEN_INPUTS="$jobdir/inputs"',
+		'export LIMEN_OUTPUTS="$jobdir/outputs"',
 		loadOauth(input.jobId),
 		`export LIMEN_JOB_ID=${posixQuote(input.jobId)}`,
 		`export LIMEN_JOB_LABEL=${posixQuote(input.label)}`,
@@ -269,11 +274,15 @@ export function bundleScript(host: RemoteHost, jobId: string): string {
 	return `set +e
 ${pathLine}jobdir=${dir}
 files=""
-for name in result session-ended session note.md note.first.md; do
+for name in result session-ended session note.md note.first.md outputs; do
   if [ -e "$jobdir/$name" ]; then
     files="$files $name"
   fi
 done
+if [ -d "$jobdir/outputs" ] && [ "$(du -sk "$jobdir/outputs" | cut -f1)" -gt ${TRANSFER_CAP_KB} ]; then
+  echo "limen-remote: outputs over ${TRANSFER_CAP_KB / 1024} MB not copied" >&2
+  files=$(printf "%s" "$files" | tr " " "\\n" | grep -v "^outputs$" | tr "\\n" " ")
+fi
 if [ -n "$files" ]; then
   tar -C "$jobdir" -cf - $files | node -e 'const c=[];process.stdin.on("data",d=>c.push(d));process.stdin.on("end",()=>process.stdout.write(Buffer.concat(c).toString("base64")))'
 fi
