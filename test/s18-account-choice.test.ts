@@ -4,7 +4,14 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { formatUsage, leastLoaded, probeUsage, readSeatUsage, type Usage } from "../src/runtime/account-usage.ts";
+import {
+	formatUsage,
+	leastLoaded,
+	markSharedLimits,
+	probeUsage,
+	readSeatUsage,
+	type Usage,
+} from "../src/runtime/account-usage.ts";
 import { listSeatAccounts, resolveNamedAccount } from "../src/runtime/claude-account.ts";
 import { chooseHostAccount, recordedAccount } from "../src/runtime/host-account.ts";
 
@@ -130,4 +137,28 @@ test("readSeatUsage probes every distinct account once", async () => {
 		rows.map((r) => r.name),
 		["a", "b"],
 	);
+});
+
+test("two tokens on one subscription are marked as sharing one limit, and distinct accounts are not", () => {
+	const row = (name: string, five: number, seven: number, week: number): Usage => ({
+		name,
+		aliases: [],
+		fiveHour: 0.04,
+		sevenDay: week,
+		fiveHourReset: five,
+		sevenDayReset: seven,
+		status: "allowed",
+	});
+	const marked = markSharedLimits([
+		row("a", 100, 900, 0.59),
+		row("b", 100, 800, 0.3),
+		row("c", 100, 900, 0.59),
+		row("d", 100, 900, 0.3),
+		{ name: "e", aliases: [], error: "http 500" },
+	]);
+	assert.deepEqual(
+		marked.map((r) => r.sameLimitAs),
+		[undefined, undefined, "a", undefined, undefined],
+	);
+	assert.match(formatUsage(marked), /c .*\(same limit as a\)/);
 });

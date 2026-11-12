@@ -21,6 +21,8 @@ export type Usage = {
 	/** `allowed`, `rejected`, … as the API names it. */
 	readonly status?: string;
 	readonly error?: string;
+	/** Another account whose windows match this one's exactly: two tokens on one subscription share one limit. */
+	readonly sameLimitAs?: string;
 };
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -86,13 +88,37 @@ export async function readSeatUsage(
 	fetcher: Fetch = fetch,
 ): Promise<Usage[]> {
 	const accounts = listSeatAccounts(root);
-	return await Promise.all(
+	const rows = await Promise.all(
 		accounts.map(async (account) => ({
 			name: account.name,
 			aliases: account.aliases,
 			...(await probeUsage(account.token, env, fetcher)),
 		})),
 	);
+	return markSharedLimits(rows);
+}
+
+/**
+ * Tokens are not subscriptions: two different tokens of one subscription report the same windows. Accounts whose
+ * five-hour and weekly resets are identical and whose weekly share is within a point are marked as sharing one limit,
+ * so nobody counts that room twice. Each is marked against the first account (by order) it matches.
+ */
+export function markSharedLimits(rows: readonly Usage[]): Usage[] {
+	return rows.map((row, index) => {
+		if (row.fiveHourReset === undefined || row.sevenDayReset === undefined || row.sevenDay === undefined) {
+			return row;
+		}
+		const first = rows
+			.slice(0, index)
+			.find(
+				(other) =>
+					other.fiveHourReset === row.fiveHourReset &&
+					other.sevenDayReset === row.sevenDayReset &&
+					other.sevenDay !== undefined &&
+					Math.abs(other.sevenDay - (row.sevenDay ?? 0)) <= 0.01,
+			);
+		return first ? { ...row, sameLimitAs: first.name } : row;
+	});
 }
 
 /** An account that has quota left right now. */
@@ -137,7 +163,8 @@ export function formatUsage(rows: readonly Usage[], now: Date = new Date()): str
 	const width = Math.max(...rows.map((row) => row.name.length));
 	const lines = rows.map((row) => {
 		const name = row.name.padEnd(width);
-		const alias = row.aliases.length > 0 ? `  (also ${row.aliases.join(", ")})` : "";
+		const aliasNote = row.aliases.length > 0 ? `  (also ${row.aliases.join(", ")})` : "";
+		const alias = row.sameLimitAs ? `${aliasNote}  (same limit as ${row.sameLimitAs})` : aliasNote;
 		if (row.error) {
 			return `  ${name}  usage unknown (${row.error})${alias}`;
 		}
