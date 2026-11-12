@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,47 @@ export function resolveSeatAccount(): SeatAccount | undefined {
 		return found;
 	}
 	return readCredentialsFile();
+}
+
+/** The directory that holds the seat's accounts. `LIMEN_CLAUDE_ACCOUNTS` forces it. */
+export function accountsRoot(): string {
+	return process.env.LIMEN_CLAUDE_ACCOUNTS?.trim() || join(homedir(), ".claude-accounts");
+}
+
+/**
+ * Every account with a readable token, by name. Two files holding the same token are one account: the first name in
+ * sort order is the account and the others are its aliases, so the same quota is never counted twice.
+ */
+export function listSeatAccounts(root: string = accountsRoot()): (SeatAccount & { readonly aliases: string[] })[] {
+	let files: string[];
+	try {
+		files = readdirSync(root)
+			.filter((file) => file.endsWith(".token"))
+			.sort();
+	} catch {
+		return [];
+	}
+	const found: (SeatAccount & { readonly aliases: string[] })[] = [];
+	for (const file of files) {
+		const name = file.slice(0, -".token".length);
+		const token = cleanToken(readText(join(root, file)) ?? "");
+		if (!NAME.test(name) || !token) {
+			continue;
+		}
+		const same = found.find((account) => account.token === token);
+		if (same) {
+			same.aliases.push(name);
+		} else {
+			found.push({ name, token, aliases: [] });
+		}
+	}
+	return found;
+}
+
+/** The named account (or an alias of it), or undefined when no token file holds it. */
+export function resolveNamedAccount(name: string, root: string = accountsRoot()): SeatAccount | undefined {
+	const account = listSeatAccounts(root).find((entry) => entry.name === name || entry.aliases.includes(name));
+	return account ? { name: account.name, token: account.token } : undefined;
 }
 
 /** A token safe to place in a remote file: one line, bounded, no spaces. Anything else is refused, not logged. */
