@@ -446,6 +446,9 @@ function tmpFindings(host: string, probe: Probe): Finding[] {
 		parts.push(`inodes ${probe.tmpInodesPercent}%`);
 	}
 	for (const dir of probe.pytest) {
+		if (pytestBase(dir.path)) {
+			continue;
+		}
 		if (dir.ageHours >= TMP_STALE_HOURS && !dir.inUse) {
 			findings.push(
 				act("pytest-stale", host, `${dir.path} is ${dir.ageHours}h old and unused`, {
@@ -668,6 +671,10 @@ function newerJob(other: JobSnap, job: JobSnap): boolean {
 
 function featureOf(job: JobSnap): string {
 	return `${job.label ?? ""}\n${job.id}`.match(/\bf\d{3,}\b/i)?.[0]?.toUpperCase() ?? "";
+}
+
+function pytestBase(path: string): boolean {
+	return /^\/(?:private\/)?tmp\/pytest-of-[^/]+$/.test(path);
 }
 
 function seatLine(seat: DoctorReport["seat"]): string {

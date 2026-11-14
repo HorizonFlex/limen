@@ -4,7 +4,18 @@
 #   stack-doctor.sh --reason "seat-health: herdr down"
 set -u
 umask 077
-export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${PATH:-}"
+# launchd's PATH has no npm global bin. pi on the seat is ~/.npm-global/bin/pi.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH:-}"
+if command -v npm >/dev/null 2>&1; then
+	prefix=$(npm prefix -g 2>/dev/null || true)
+	if [ -n "${prefix:-}" ] && [ -d "$prefix/bin" ]; then
+		case ":$PATH:" in
+		*":$prefix/bin:"*) ;;
+		*) PATH="$prefix/bin:$PATH" ;;
+		esac
+		export PATH
+	fi
+fi
 
 reason=""
 while [ $# -gt 0 ]; do
@@ -49,7 +60,7 @@ if [ "$code" -eq 0 ]; then
 	exit 0
 fi
 if [ "$code" -ne 2 ]; then
-	moshi-hook notify --title "Limen stack doctor" --source stack-doctor "collector failed (exit $code)" >/dev/null 2>&1 || true
+	limen doctor notify collector-failed "collector failed (exit $code)" >/dev/null 2>&1 || true
 	exit "$code"
 fi
 
@@ -65,7 +76,7 @@ If this incident taught a lesson that docs/ops-knowledge.md does not already sta
 EOF
 
 if ! command -v pi >/dev/null 2>&1 || [ ! -f "$runbook" ]; then
-	moshi-hook notify --title "Limen stack doctor" --source stack-doctor "findings in ${report}; pi or the runbook is missing" >/dev/null 2>&1 || true
+	limen doctor notify pi-missing "findings in ${report}; pi or the runbook is missing" --report "$report" >/dev/null 2>&1 || true
 	exit 0
 fi
 

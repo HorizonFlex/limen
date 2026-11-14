@@ -1,6 +1,18 @@
 #!/bin/bash
 # Read-only probe a seat or a host can run. Prints tab-separated lines. No tokens, no account files.
 set +e
+# launchd and non-interactive ssh omit npm's global bin. pi on the seat is ~/.npm-global/bin/pi.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH:-}"
+if command -v npm >/dev/null 2>&1; then
+	prefix=$(npm prefix -g 2>/dev/null || true)
+	if [ -n "${prefix:-}" ] && [ -d "$prefix/bin" ]; then
+		case ":$PATH:" in
+		*":$prefix/bin:"*) ;;
+		*) PATH="$prefix/bin:$PATH" ;;
+		esac
+		export PATH
+	fi
+fi
 printf 'path\t%s\n' "$PATH"
 for name in python3 pi node playwright; do
 	if [ "$name" = playwright ] && ! command -v playwright >/dev/null 2>&1; then

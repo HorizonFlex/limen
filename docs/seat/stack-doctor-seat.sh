@@ -1,6 +1,17 @@
 #!/bin/bash
 # Read-only seat checks: daemons, disk, memory pressure, load. No tokens.
 set +e
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH:-}"
+if command -v npm >/dev/null 2>&1; then
+	prefix=$(npm prefix -g 2>/dev/null || true)
+	if [ -n "${prefix:-}" ] && [ -d "$prefix/bin" ]; then
+		case ":$PATH:" in
+		*":$prefix/bin:"*) ;;
+		*) PATH="$prefix/bin:$PATH" ;;
+		esac
+		export PATH
+	fi
+fi
 herdr_core_up() {
 	label=dev.agent.herdr-core
 	if command -v launchctl >/dev/null 2>&1; then
