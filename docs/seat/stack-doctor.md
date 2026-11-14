@@ -13,9 +13,9 @@ The report covers, per enabled host in `~/.limen/hosts.json`: `limen hosts check
 
 ## What the agent may change
 
-`limen doctor act '<json>'` is the only repair. `--dry-run` classifies and does not change anything. A refusal is the proposal: it is appended to `~/.limen/stack-doctor/proposals.log`, sent with `moshi-hook notify`, and shown as a seat notification.
+`limen doctor act '<json>'` is the only repair. `--dry-run` classifies and does not change anything. A refusal is the proposal: it is appended to `~/.limen/stack-doctor/proposals.log`, and, when that text has not already been sent within `LIMEN_DOCTOR_RENOTIFY_HOURS` (default 24), sent with `moshi-hook notify` and shown as a seat notification. The same window covers the launchd messages `pi or the runbook is missing` and `collector failed`. The fingerprints live in `~/.limen/stack-doctor/notify.json`.
 
-Allowed: remove one unused `/tmp` entry at least 2 hours old (including `pytest-of-*`); kill a pid that belongs to a finished job; append one `export PATH` line to a host's `~/.zshenv`; re-run `limen hosts check`; start herdr on the seat when it is not already running.
+Allowed: remove one unused `/tmp` entry at least 2 hours old. A directory named `pytest-of-*` directly under `/tmp` is pytest's base directory and is not reported; the host tmp guard cleans the `pytest-*` children inside it. Also allowed: kill a pid that belongs to a finished job; append one `export PATH` line to a host's `~/.zshenv`; re-run `limen hosts check`; start herdr on the seat when it is not already running.
 
 Not allowed, and never done by the act command: deleting any other path, editing `hosts.json` (`overflow`, `maxConcurrent`, or anything else), restarting a coordinator, moshi, or the token broker, changing a Claude account, editing Limen. A new lesson is a pull request that appends to [ops-knowledge.md](../ops-knowledge.md), not a push to main.
 
@@ -72,4 +72,9 @@ seat-health, or any other checker, calls the script with a short reason. The rea
 /Users/agent/src/limen/docs/seat/stack-doctor.sh --reason "seat-health: herdr down"
 ```
 
-Pi needs to be on the PATH the script sets (`/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin` and `~/.local/bin`). If `pi` is missing, the script notifies Moshi with the report path and does not fail the launchd job.
+Pi needs to be on the PATH the script sets (`/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin`, `~/.local/bin`, `~/.npm-global/bin`, and `npm prefix -g`/bin when `npm` is already on that PATH). On this seat, `pi` is `~/.npm-global/bin/pi`. If `pi` is still missing, the script notifies Moshi once per finding set per renotify window and does not fail the launchd job.
+
+## Changes
+
+- **2026-11-14.** launchd's PATH includes `~/.npm-global/bin` and `npm prefix -g`/bin, so `pi` on the seat is visible. The same Moshi text, including a repeated proposal, waits `LIMEN_DOCTOR_RENOTIFY_HOURS` (default 24) in `~/.limen/stack-doctor/notify.json`. A bare `/tmp/pytest-of-<user>` directory is not reported as stale.
+

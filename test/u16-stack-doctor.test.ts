@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { orphanKillBlock } from "../src/doctor/act.ts";
+import { claimNotify, findingFingerprint, renotifyMs } from "../src/doctor/notify.ts";
 import {
 	hostCheckFindings,
 	jobFindings,
@@ -40,7 +41,8 @@ tmp-inodes\t92\t/tmp
 bridge missing
 zshenv nopath
 local-python\t/home/ada/.local/bin/python3
-pytest\t5\t0\t/tmp/pytest-of-ada
+pytest\t5\t0\t/tmp/old-run
+pytest\t6\t0\t/tmp/pytest-of-arkadiusz
 pytest\t1\t1\t/tmp/pytest-of-busy
 orphan\t4242\t1\t/tmp/.sandbox-limen-worktrees/2026-11-14-smoke-abcd (deleted)\tpython -m http.server
 `);
@@ -56,9 +58,9 @@ orphan\t4242\t1\t/tmp/.sandbox-limen-worktrees/2026-11-14-smoke-abcd (deleted)\t
 	assert.equal(classifyAction(orphan?.action).decision, "allow");
 	assert.ok(findings.some((finding) => finding.id === "tmp-pressure"));
 	assert.ok(findings.some((finding) => finding.id === "bridge-missing"));
-	assert.ok(findings.some((finding) => finding.id === "pytest-busy"));
+	assert.equal(clean?.summary.includes("/tmp/old-run"), true);
 	assert.equal(
-		findings.some((finding) => finding.severity === "act" && finding.summary.includes("/tmp/pytest-of-busy")),
+		findings.some((finding) => finding.summary.includes("pytest-of-")),
 		false,
 	);
 });
@@ -150,6 +152,13 @@ test("the probe script reads inodes and does not open token files", async () => 
 	assert.match(script, /df -i/);
 	assert.equal(script.includes(".token"), false);
 	assert.equal(script.includes("claude-accounts"), false);
+	assert.match(script, /\.npm-global\/bin/);
+	assert.match(script, /npm prefix -g/);
+	const seat = await readFile(join(root, "docs/seat/stack-doctor-seat.sh"), "utf8");
+	const launch = await readFile(join(root, "docs/seat/stack-doctor.sh"), "utf8");
+	assert.match(seat, /\.npm-global\/bin/);
+	assert.match(launch, /\.npm-global\/bin/);
+	assert.match(launch, /doctor notify/);
 });
 
 const running = "2026-11-14-f267-d-1ee198cc";
@@ -284,3 +293,26 @@ test("playwright is present when the Python module imports, and a running launch
 function emptyProbe() {
 	return parseProbe("");
 }
+
+const day = 24 * 60 * 60 * 1000;
+
+test("the same notice is sent once until the renotify window passes", () => {
+	const now = 1_700_000_000_000;
+	const first = claimNotify({}, "pi-missing", "same", now, day);
+	assert.equal(first.send, true);
+	assert.equal(claimNotify(first.book, "pi-missing", "same", now + 60_000, day).send, false);
+	assert.equal(claimNotify(first.book, "pi-missing", "changed", now + 60_000, day).send, true);
+	assert.equal(claimNotify(first.book, "pi-missing", "same", now + day, day).send, true);
+	assert.equal(
+		findingFingerprint([
+			{ host: "b", id: "x", summary: "2" },
+			{ host: "a", id: "y", summary: "1" },
+		]),
+		findingFingerprint([
+			{ host: "a", id: "y", summary: "1" },
+			{ host: "b", id: "x", summary: "2" },
+		]),
+	);
+	assert.equal(renotifyMs({}), day);
+	assert.equal(renotifyMs({ LIMEN_DOCTOR_RENOTIFY_HOURS: "6" }), 6 * 60 * 60 * 1000);
+});

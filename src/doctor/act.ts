@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { showSeatNotification } from "../integrations/herdr.ts";
 import { textFile } from "../job/record.ts";
 import { registeredProjects, seatDir } from "../project/seat.ts";
 import { posixQuote, type ShellText, shellText } from "../runtime/host-shell.ts";
 import { hostByAlias, loadHostPool } from "../runtime/hosts.ts";
 import { runBash } from "./bash.ts";
+import { deliverNotice, notifyFingerprint } from "./notify.ts";
 import { type JobSnap, liveWorktreeBlock, redact } from "./parse.ts";
 import { TMP_STALE_HOURS } from "./policy.ts";
 
@@ -45,10 +45,7 @@ export async function propose(reason: string, action: unknown): Promise<void> {
 	await appendFile(join(dir, "proposals.log"), `${new Date().toISOString()} ${body.replaceAll("\n", " ")}\n`);
 	console.log(body);
 	const note = body.slice(0, 240);
-	spawnSync("moshi-hook", ["notify", "--title", "Limen stack doctor", "--source", "stack-doctor", note], {
-		timeout: 8_000,
-	});
-	await showSeatNotification("Limen stack doctor", note);
+	await deliverNotice(`proposal:${notifyFingerprint(note)}`, note);
 }
 
 async function killOrphan(action: Record<string, unknown>): Promise<ActResult> {

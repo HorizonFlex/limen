@@ -9,5 +9,7 @@ What has been verified on this seat. Coordinators read this before they state ho
 - On `win`, `/tmp` is a 7.7G tmpfs with about 1M inodes. `pytest-of-<user>` can use the inodes up within hours. The failure is `ENOSPC`. Pi then fails to load extensions (`Unknown provider "claude-bridge"`). A full `/tmp` also drops the job log, so the seat record can look empty.
 - Non-interactive ssh does not read `.zshrc`. On these hosts the ssh command is a zsh login shell, which reads `~/.zshenv`. `python3`, `pi`, and `node` have to be on the PATH that file sets, or in the host's `path` in `hosts.json`.
 - `win` and `mbp` have Python 3.13 on `~/.local/bin`, and Playwright 1.65 with Chromium, for review jobs that drive a browser.
-- Hosts run a nightly tmp clean at 04:45, and a tmp guard every 15 minutes that clears `pytest-of-*` when inodes or space on `/tmp` pass 70%.
+- Hosts run a nightly tmp clean at 04:45, and a tmp guard every 15 minutes that clears `pytest-of-*` when inodes or space on `/tmp` pass 70%. The directory `/tmp/pytest-of-<user>` itself is pytest's base and is recreated as tests run; its own age is not a full disk.
+- On the seat, `pi` is `~/.npm-global/bin/pi`. launchd does not see it unless that directory, or the bin from `npm prefix -g`, is on PATH. A report that `pi` is missing on the short launchd PATH is not a broken install.
+
 - A running job does not move to another host. `limen continue` stays on the worktree's host.
