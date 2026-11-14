@@ -42,6 +42,7 @@ import {
 	resolveSpawnEngine,
 } from "../runtime/engine.ts";
 import {
+	assertHostCanAuth,
 	assertHostEngine,
 	assertHostProject,
 	hostByAlias,
@@ -301,6 +302,7 @@ async function preflightContinuation(
 	}
 	const found = hostByAlias(loadHostPool(), options.host);
 	await assertHostProject(found, project);
+	await assertHostCanAuth(found, provider, model);
 	await assertHostEngine(found, model, provider);
 }
 

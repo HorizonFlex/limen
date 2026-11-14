@@ -8,6 +8,7 @@ import { resolveNamedAccount, resolveSeatAccount } from "./claude-account.ts";
 import { argvFor, ENGINES, engineRoute } from "./engine.ts";
 import { githubRepo, mintHostToken, missingTokenLine, redactSecrets } from "./github-broker.ts";
 import { recordedAccount } from "./host-account.ts";
+import { hostClaudeRoute } from "./host-auth.ts";
 import { INPUTS_DIR, packInputs, recordedInputs } from "./host-inputs.ts";
 import {
 	bundleScript,
@@ -248,6 +249,12 @@ async function settleCleanExit(
 async function streamJob(job: RemoteJob, delivered: Delivered): Promise<Outcome> {
 	const task = job.continueTask ?? (await readFile(job.taskFile, "utf8"));
 	const launch = piArgs(job);
+	if (launch.mapped) {
+		await appendLimenLog(
+			job.jobDir,
+			`remote host ${job.host.alias}: ${launch.mapped} (Claude Code OAuth is not a Pi anthropic API key)`,
+		);
+	}
 	const script = launchScript({
 		host: job.host,
 		jobId: job.jobId,
@@ -261,11 +268,14 @@ async function streamJob(job: RemoteJob, delivered: Delivered): Promise<Outcome>
 	return watchRemote(job, openRemoteShell(job.host, script), delivered.secrets);
 }
 
-function piArgs(job: RemoteJob): { readonly args: string[]; readonly bridged: boolean } {
+function piArgs(job: RemoteJob): { readonly args: string[]; readonly bridged: boolean; readonly mapped?: string } {
 	const provider = job.provider || undefined;
 	const model = job.model || undefined;
 	const thinking = job.thinking || undefined;
-	const route = engineRoute(ENGINES.pi, provider, model);
+	const plan = hostClaudeRoute({ provider, model, token: resolveSeatAccount()?.token });
+	const routedProvider = plan.ok ? plan.provider : provider;
+	const routedModel = plan.ok ? plan.model : model;
+	const route = engineRoute(ENGINES.pi, routedProvider, routedModel);
 	const remoteJob = remoteLayout(job.host, job.jobId).jobDir;
 	const extensions = ["finish.ts", "steering.ts", "communication.ts"].map((name) => `${job.host.hook}/${name}`);
 	const args = argvFor(ENGINES.pi, {
@@ -275,12 +285,14 @@ function piArgs(job: RemoteJob): { readonly args: string[]; readonly bridged: bo
 		preamble: job.preamble,
 		extensions,
 		...(route.bridged ? { bridgePath: "__LIMEN_BRIDGE__" } : {}),
-		...(provider ? { provider } : {}),
-		...(model ? { model } : {}),
+		...(routedProvider ? { provider: routedProvider } : {}),
+		...(routedModel ? { model: routedModel } : {}),
 		...(thinking ? { thinking } : {}),
 		...(job.continueTask !== undefined ? { continueValue: job.continueTask } : { taskFile: `${remoteJob}/task.md` }),
 	});
-	return { args, bridged: route.bridged };
+	return plan.ok && plan.mapped
+		? { args, bridged: route.bridged, mapped: plan.mapped }
+		: { args, bridged: route.bridged };
 }
 
 async function watchRemote(
