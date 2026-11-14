@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { textFile } from "../job/record.ts";
 import { packageRoot } from "../project/inherit.ts";
-import { registeredProjects } from "../project/seat.ts";
+import { registeredProjects, seatDir } from "../project/seat.ts";
 import { findStatusCommand, readAccountStatus } from "../runtime/account-status.ts";
 import { formatUsage, readSeatUsage } from "../runtime/account-usage.ts";
 import { hostCheckScript, shellText } from "../runtime/host-shell.ts";
@@ -17,7 +17,9 @@ import {
 	type DoctorReport,
 	hostCheckFindings,
 	type JobSnap,
+	jobAckLine,
 	jobFindings,
+	jobWindowMs,
 	type Probe,
 	parseProbe,
 	parseSeat,
@@ -29,12 +31,13 @@ import {
 	unpushedFindings,
 } from "./parse.ts";
 
-const RECENT_MS = 48 * 60 * 60 * 1000;
 const LOG_TAIL = 8_000;
 
 /** Read-only. One dead host becomes a finding; it does not drop the rest of the report. */
 export async function collectReport(at = new Date().toISOString()): Promise<DoctorReport> {
 	const jobs = await collectJobs();
+	const acked = readAck();
+	const failures = jobFindings(jobs, { windowMs: jobWindowMs(), acked });
 	const [seatProbe, seatText, accounts] = await Promise.all([
 		runScript("stack-doctor-probe.sh"),
 		runScript("stack-doctor-seat.sh"),
@@ -47,16 +50,17 @@ export async function collectReport(at = new Date().toISOString()): Promise<Doct
 		...seatFindings(seat),
 		...probeFindings("seat", seat.probe, jobs, false),
 		...hosts.findings,
-		...jobFindings(jobs),
+		...failures,
 		...unpushedFindings(unpushed),
 		...accountsFinding(accounts),
 	];
+	await rememberJobAcks(failures, acked).catch(() => undefined);
 	return buildReport({
 		at,
 		seat,
 		hosts: hosts.views,
 		accounts,
-		failedJobs: jobs.filter((job) => job.state === "failed"),
+		failedJobs: jobs.filter((job) => failures.some((finding) => finding.summary.startsWith(`${job.id} `))),
 		unpushed,
 		findings,
 	});
@@ -116,11 +120,14 @@ async function collectJobs(): Promise<JobSnap[]> {
 
 async function jobSnap(dir: string, id: string, now: number): Promise<JobSnap | undefined> {
 	const state = await textFile(join(dir, "state"));
-	if (state !== "done" && state !== "failed" && state !== "stopped") {
+	const live = state === "running" || state === "starting" || state === "queued";
+	const terminal = state === "done" || state === "failed" || state === "stopped";
+	if (!live && !terminal) {
 		return;
 	}
 	const finished = Date.parse(await textFile(join(dir, "finished-at")));
-	if (Number.isFinite(finished) && now - finished > RECENT_MS) {
+	const finishedAt = Number.isFinite(finished) ? finished : 0;
+	if (terminal && finishedAt > 0 && now - finishedAt > jobWindowMs()) {
 		return;
 	}
 	const tools = Number(await textFile(join(dir, "tool-calls")));
@@ -128,9 +135,34 @@ async function jobSnap(dir: string, id: string, now: number): Promise<JobSnap | 
 		id,
 		state,
 		toolCalls: Number.isFinite(tools) ? tools : 0,
-		log: await tail(join(dir, "log")),
+		log: state === "failed" ? await tail(join(dir, "log")) : "",
 		host: await textFile(join(dir, "host")),
+		label: await textFile(join(dir, "label")),
+		finishedAt,
 	};
+}
+
+function readAck(): Set<string> {
+	try {
+		return new Set(
+			readFileSync(join(seatDir(), "stack-doctor", "ack"), "utf8")
+				.split("\n")
+				.map((line) => line.trim())
+				.filter(Boolean),
+		);
+	} catch {
+		return new Set();
+	}
+}
+
+async function rememberJobAcks(findings: DoctorReport["findings"], already: ReadonlySet<string>): Promise<void> {
+	const fresh = findings.map(jobAckLine).filter((line) => line && !already.has(line));
+	if (!fresh.length) {
+		return;
+	}
+	const dir = join(seatDir(), "stack-doctor");
+	await mkdir(dir, { recursive: true });
+	await appendFile(join(dir, "ack"), `${fresh.join("\n")}\n`);
 }
 
 function collectUnpushed(): Unpushed[] {

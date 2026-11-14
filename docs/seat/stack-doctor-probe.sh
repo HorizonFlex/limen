@@ -3,6 +3,12 @@
 set +e
 printf 'path\t%s\n' "$PATH"
 for name in python3 pi node playwright; do
+	if [ "$name" = playwright ] && ! command -v playwright >/dev/null 2>&1; then
+		if python3 -c 'import playwright' >/dev/null 2>&1; then
+			printf 'tool\tplaywright\tok\tpython-module\t-\n'
+			continue
+		fi
+	fi
 	if command -v "$name" >/dev/null 2>&1; then
 		bin=$(command -v "$name")
 		ver=-
@@ -59,45 +65,40 @@ find /tmp -maxdepth 1 -name 'pytest-of-*' -type d 2>/dev/null | while IFS= read 
 	fi
 	printf 'pytest\t%s\t%s\t%s\n' "$age" "$inuse" "$dir"
 done
+# One line per process: pid, parent, deleted cwd, cwd, command. The seat decides which belong to a finished job.
 if [ -d /proc ]; then
 	for cmdf in /proc/[0-9]*/cmdline; do
 		pid=${cmdf#/proc/}
 		pid=${pid%/cmdline}
+		[ "$pid" -gt 1 ] 2>/dev/null || continue
 		cmd=$(tr '\0' ' ' <"$cmdf" 2>/dev/null | tr '\t' ' ')
 		[ -n "$cmd" ] || continue
+		ppid=$(awk '/^PPid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || echo 0)
 		cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo deleted)
-		cwd=$(printf '%s' "$cwd" | tr '\t' ' ')
+		cwd=$(printf '%s' "$cwd" | tr '\t' ' ' | cut -c 1-180)
+		cmd=$(printf '%s' "$cmd" | cut -c 1-180)
 		deleted=0
 		case "$cwd" in
 		deleted | *' (deleted)') deleted=1 ;;
 		esac
-		# A deleted cwd alone is not a job leftover. Only processes a finished job would have left.
-		interesting=0
-		case "$cmd" in *http.server*) interesting=1 ;; esac
-		case "$cwd" in *limen-worktrees*) interesting=1 ;; esac
-		case "$cmd$cwd" in *pytest-of*) interesting=1 ;; esac
-		if [ "$interesting" = 1 ]; then
-			printf 'orphan\t%s\t%s\t%s\t%s\n' "$pid" "$deleted" "$cwd" "$cmd"
-		fi
+		printf 'proc\t%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$deleted" "$cwd" "$cmd"
 	done
 else
-	ps -ax -o pid=,command= 2>/dev/null | while IFS= read -r row; do
-		case "$row" in
-		*http.server*)
-			pid=$(printf '%s' "$row" | awk '{print $1}')
-			cmd=$(printf '%s' "$row" | tr '\t' ' ')
-			deleted=0
-			cwd=unknown
-			if command -v lsof >/dev/null 2>&1; then
-				shown=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/ {sub(/^n/,""); print; exit}')
-				if [ -n "$shown" ]; then
-					cwd=$(printf '%s' "$shown" | tr '\t' ' ')
-					case "$cwd" in *'(deleted)') deleted=1 ;; esac
-				fi
+	ps -ax -o pid=,ppid=,command= 2>/dev/null | while IFS= read -r row; do
+		pid=$(printf '%s' "$row" | awk '{print $1}')
+		ppid=$(printf '%s' "$row" | awk '{print $2}')
+		cmd=$(printf '%s' "$row" | tr '\t' ' ' | cut -c 1-180)
+		[ "$pid" -gt 1 ] 2>/dev/null || continue
+		deleted=0
+		cwd=unknown
+		if command -v lsof >/dev/null 2>&1; then
+			shown=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/ {sub(/^n/,""); print; exit}')
+			if [ -n "$shown" ]; then
+				cwd=$(printf '%s' "$shown" | tr '\t' ' ' | cut -c 1-180)
+				case "$cwd" in *'(deleted)') deleted=1 ;; esac
 			fi
-			printf 'orphan\t%s\t%s\t%s\t%s\n' "$pid" "$deleted" "$cwd" "$cmd"
-			;;
-		esac
+		fi
+		printf 'proc\t%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$deleted" "$cwd" "$cmd"
 	done
 fi
 exit 0

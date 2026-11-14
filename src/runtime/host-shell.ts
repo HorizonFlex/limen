@@ -481,15 +481,20 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 claude_err=$(claude auth status 2>&1)
 claude_code=$?
-if [ "$claude_code" = 0 ]; then
-  echo "claude ok"
-else
-  echo "claude fail"
-  if [ -n "$claude_err" ]; then
-    printf '%s\n' "$claude_err" | head -n 8 | sed 's/^/claude /'
+# A logged-out host is not a failure. The seat sends CLAUDE_CODE_OAUTH_TOKEN for each job.
+if [ "$claude_code" = 0 ] || printf '%s\n' "$claude_err" | grep -q '"loggedIn"'; then
+  if printf '%s\n' "$claude_err" | grep -q '"loggedIn" *: *false'; then
+    echo "claude info not logged in; host jobs use the seat token"
   else
-    echo "claude no output, exit $claude_code"
+    echo "claude ok"
   fi
+  exit 0
+fi
+echo "claude fail"
+if [ -n "$claude_err" ]; then
+  printf '%s\n' "$claude_err" | head -n 8 | sed 's/^/claude /'
+else
+  echo "claude no output, exit $claude_code"
 fi
 exit 0
 `;
