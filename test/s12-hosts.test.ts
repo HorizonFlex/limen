@@ -400,6 +400,29 @@ test("the load probe finds node through the host path when ssh's default PATH ha
 	assert.ok(Number.isFinite((JSON.parse(ran.stdout) as { cpuIdle: number }).cpuIdle));
 });
 
+test("a darwin probe over the BatchMode ssh command reads memory_pressure even when it exits non-zero", async () => {
+	const bin = await mkdtemp(join(tmpdir(), "limen-darwin-probe-"));
+	await writeFile(join(bin, "uname"), "#!/bin/sh\necho Darwin\n");
+	await writeFile(
+		join(bin, "memory_pressure"),
+		"#!/bin/sh\nif [ \"$1\" = \"-Q\" ]; then echo 'System-wide memory free percentage: 48%'; exit 1; fi\necho 'System-wide memory free percentage: 48%'\nexit 1\n",
+	);
+	await symlink(process.execPath, join(bin, "node"));
+	await chmod(join(bin, "uname"), 0o755);
+	await chmod(join(bin, "memory_pressure"), 0o755);
+	const argv = sshArgv("ssh", { ssh: "ada@mbp", platform: "darwin", distro: "Ubuntu" });
+	assert.ok(argv.includes("BatchMode=yes"));
+	const command = argv.at(-1) ?? "";
+	const ran = spawnSync("bash", ["-lc", command], {
+		input: probeScript(0, undefined, bin),
+		encoding: "utf8",
+		env: { PATH: "/usr/bin:/bin" },
+	});
+	assert.equal(ran.status, 0, ran.stderr);
+	const reading = JSON.parse(ran.stdout.slice(ran.stdout.lastIndexOf("{"))) as { memoryFree: number };
+	assert.equal(reading.memoryFree, 48);
+});
+
 test("the login probe says whether the host's Claude is logged in, missing, or logged out", async () => {
 	const bin = await mkdtemp(join(tmpdir(), "limen-claude-"));
 	const run = (env: Record<string, string>) =>
@@ -441,6 +464,39 @@ test("overflow keeps a job on the seat when it has no account to send and the ho
 			readFileSync(join(dir, "log"), "utf8"),
 			/mbp skipped: no seat Claude account and the host is not logged in/,
 		);
+	} finally {
+		await seat.made.cleanup();
+	}
+});
+
+test("overflow logs why a darwin probe was skipped and keeps the job on the seat", async () => {
+	const seat = await remotePlant("darwin", "mbp");
+	try {
+		const bin = await mkdtemp(join(tmpdir(), "limen-darwin-uname-"));
+		await writeFile(join(bin, "uname"), "#!/bin/sh\necho Darwin\n");
+		await chmod(join(bin, "uname"), 0o755);
+		const poolPath = join(seat.made.parent, ".limen", "hosts.json");
+		const pool = JSON.parse(readFileSync(poolPath, "utf8")) as { hosts: { path?: string; alias: string }[] };
+		const first = pool.hosts[0];
+		if (!first) {
+			throw new Error("planted pool has no host");
+		}
+		first.path = bin;
+		await writeFile(poolPath, JSON.stringify({ ...pool, overflow: true }));
+		await writeFile(join(seat.made.parent, "start-reading.json"), '{"cpuIdle":0,"memoryFree":0}\n');
+		const env = { ...seat.env, LIMEN_CLAUDE_ACCOUNTS: await seatAccounts() };
+		const id = plant.spawnJob(seat.made, "finish\nfinish stayed", ["--label", "probe-skip"], { env });
+		const dir = join(seat.made.root, ".limen", "jobs", id);
+		await plant.until(
+			dir,
+			() => existsSync(join(dir, "log")) && readFileSync(join(dir, "log"), "utf8").includes("probe failed"),
+		);
+		await writeFile(join(seat.made.parent, "start-reading.json"), '{"cpuIdle":100,"memoryFree":100}\n');
+		assert.equal(plant.waitJob(seat.made, id, { env }), "done");
+		assert.equal(existsSync(join(dir, "host")), false);
+		const log = readFileSync(join(dir, "log"), "utf8");
+		assert.match(log, /mbp skipped: probe failed: memory_pressure is not on this host/);
+		assert.match(log, /none free \(mbp skipped: probe failed: memory_pressure is not on this host\)/);
 	} finally {
 		await seat.made.cleanup();
 	}

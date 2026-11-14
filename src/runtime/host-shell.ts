@@ -106,9 +106,26 @@ export function probeScript(sampleMs: number, fixed?: string, path?: string): st
 	}
 	const ms = Number.isFinite(sampleMs) && sampleMs >= 0 ? Math.round(sampleMs) : 400;
 	const pathLine = path ? `export PATH=${posixQuote(path)}:"$PATH"\n` : "";
+	// On a Mac, `freemem()` counts the file cache as used, so a laptop that `memory_pressure` calls 48% free looks
+	// under the gate. Take that percentage only. `-Q` prints the one line; a non-zero exit still keeps the text.
 	return `${pathLine}mem=""
-if [ "$(uname -s)" = "Darwin" ] && [ -x /usr/bin/memory_pressure ]; then
-  mem=$(/usr/bin/memory_pressure | sed -n 's/.*memory free percentage: *\\([0-9][0-9]*\\).*/\\1/p' | head -n 1)
+mp=""
+if [ -x /usr/bin/memory_pressure ]; then
+  mp=/usr/bin/memory_pressure
+elif command -v memory_pressure >/dev/null 2>&1; then
+  mp=$(command -v memory_pressure)
+fi
+if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -z "$mp" ]; then
+    echo "memory_pressure is not on this host" >&2
+    exit 1
+  fi
+  raw=$("$mp" -Q 2>/dev/null || "$mp" 2>/dev/null || true)
+  mem=$(printf '%s\\n' "$raw" | sed -n 's/.*[Mm]emory free percentage: *\\([0-9][0-9]*\\).*/\\1/p' | head -n 1 || true)
+  if [ -z "$mem" ]; then
+    echo "memory_pressure did not report a free percentage" >&2
+    exit 1
+  fi
 elif [ -r /proc/meminfo ]; then
   mem=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{if(t>0) printf "%.4f", 100*a/t}' /proc/meminfo)
 fi

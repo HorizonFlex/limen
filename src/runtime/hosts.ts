@@ -438,7 +438,8 @@ async function overflowHost(
 		await appendLimenLog(jobDir, `remote hosts: ${note}`);
 	}
 	if (!chosen) {
-		await appendLimenLog(jobDir, "remote hosts: none free; staying on the seat");
+		const why = notes.length > 0 ? ` (${notes.join("; ")})` : "";
+		await appendLimenLog(jobDir, `remote hosts: none free${why}; staying on the seat`);
 		return undefined;
 	}
 	return claim(jobDir, chosen, false);
@@ -599,7 +600,7 @@ async function pickHost(
 			continue;
 		}
 		if ((running[host.alias] ?? 0) >= host.maxConcurrent) {
-			notes.push(`${host.alias} is full (${running[host.alias]}/${host.maxConcurrent})`);
+			notes.push(`${host.alias} skipped: full (${running[host.alias]}/${host.maxConcurrent})`);
 			continue;
 		}
 		const login = await hostLoginProblem(host, seatHasAccount, stop);
@@ -614,7 +615,7 @@ async function pickHost(
 		}
 		readings[host.alias] = probed;
 		if (!readingClears(probed, gate)) {
-			notes.push(`${host.alias} is busy (${readingText(probed, gate)})`);
+			notes.push(`${host.alias} skipped: reading below gate (${readingText(probed, gate)})`);
 		}
 	}
 	return rankHosts(enabled, running, readings, gate);
@@ -732,14 +733,33 @@ export async function probeHostDetailed(host: RemoteHost, stop: AbortSignal): Pr
 	const script = probeScript(Number.isFinite(sample) ? sample : 400, fixed || undefined, host.path);
 	const result = await shellText(host, script, 20_000, stop);
 	if (result.code !== 0) {
-		const why = result.code === null ? "no answer from ssh" : `probe exited ${result.code}`;
-		return `${why} (${briefDetail(result.stderr)})`;
+		const detail = briefDetail(result.stderr);
+		if (result.code === null || result.code === 255) {
+			return `unreachable (${detail || "no answer from ssh"})`;
+		}
+		return `probe failed: ${detail || `exit ${result.code}`}`;
+	}
+	const reading = parseProbe(result.stdout);
+	return reading ?? `probe failed: ${briefDetail(result.stdout) || "no load reading"}`;
+}
+
+/** The last JSON object on the probe's stdout. A banner or a warning in front of it is not a failed probe. */
+function parseProbe(stdout: string): Reading | undefined {
+	const start = stdout.lastIndexOf("{");
+	const end = stdout.lastIndexOf("}");
+	if (start < 0 || end <= start) {
+		return undefined;
 	}
 	try {
-		const parsed = JSON.parse(result.stdout) as Partial<Reading>;
-		return { cpuIdle: percent(parsed.cpuIdle), memoryFree: percent(parsed.memoryFree) };
+		const parsed = JSON.parse(stdout.slice(start, end + 1)) as Partial<Reading>;
+		const cpuIdle = percent(parsed.cpuIdle);
+		const memoryFree = percent(parsed.memoryFree);
+		if (cpuIdle === undefined && memoryFree === undefined) {
+			return undefined;
+		}
+		return { cpuIdle, memoryFree };
 	} catch {
-		return "probe printed no load reading";
+		return undefined;
 	}
 }
 
