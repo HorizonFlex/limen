@@ -7,6 +7,7 @@ import {
 	hostCheckFindings,
 	jobFindings,
 	launchdRunning,
+	liveWorktreeBlock,
 	parseProbe,
 	parseSeat,
 	parseUnpushed,
@@ -186,6 +187,39 @@ test("processes of a running job are not orphans, including pytest children", ()
 	assert.equal(findings.find((finding) => finding.id === "orphan")?.severity, "act");
 	assert.equal(orphanKillBlock("running"), "job is running");
 	assert.equal(orphanKillBlock("done"), undefined);
+});
+
+test("a continue that shares a finished job's worktree is not an orphan", () => {
+	const finished = "2026-11-14-f272-shared-readers-424f06c6";
+	const continued = "2026-11-14-f272-continue-abcdef12";
+	const work = `/home/ada/src/.repo-limen-worktrees/${finished}`;
+	const procs = [
+		{
+			pid: 50630,
+			ppid: 1,
+			cwdDeleted: false,
+			cwd: "/opt/limen",
+			command: "/usr/local/bin/node /opt/limen/bin/limen",
+		},
+		{ pid: 54008, ppid: 50630, cwdDeleted: false, cwd: work, command: "pi --mode json" },
+		{ pid: 54119, ppid: 54008, cwdDeleted: false, cwd: work, command: "claude-agent-sdk" },
+	];
+	const jobs = [
+		{
+			id: finished,
+			state: "done",
+			toolCalls: 8,
+			log: "",
+			host: "seat",
+			worktree: work,
+			finishedAt: Date.now() - 3_600_000,
+		},
+		{ id: continued, state: "running", toolCalls: 1, log: "", host: "seat", worktree: work, runnerPid: 50630 },
+	];
+	assert.deepEqual(selectOrphans(procs, jobs), []);
+	assert.equal(liveWorktreeBlock(jobs, finished), `live job ${continued} uses this worktree`);
+	const withoutRecord = jobs.filter((job) => job.id === finished);
+	assert.deepEqual(selectOrphans(procs, withoutRecord), []);
 });
 
 test("a logged-out host Claude is not a doctor finding", () => {

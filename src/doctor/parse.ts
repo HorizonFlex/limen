@@ -51,6 +51,10 @@ export type JobSnap = {
 	readonly host: string;
 	readonly label?: string;
 	readonly finishedAt?: number;
+	/** Seat worktree path. A continue keeps its parent's path. */
+	readonly worktree?: string;
+	/** Pid of the live `limen` wrapper, from the job's `pid` file. */
+	readonly runnerPid?: number;
 };
 
 export type SeatSnap = {
@@ -529,6 +533,10 @@ function isOrphan(proc: Proc, procs: readonly Proc[], jobs: readonly JobSnap[]):
 	if (!leftoverCandidate(proc)) {
 		return false;
 	}
+	// A continue reuses the finished job's worktree, and its wrapper is a live `limen` process.
+	if (liveLimenAncestor(proc, procs, jobs)) {
+		return false;
+	}
 	const job = ownerJob(proc, procs, jobs);
 	if (job) {
 		return terminalJob(job.state);
@@ -561,12 +569,72 @@ function ownerJob(proc: Proc, procs: readonly Proc[], jobs: readonly JobSnap[]):
 function jobForProc(proc: Proc, jobs: readonly JobSnap[]): JobSnap | undefined {
 	const fromCwd = JOB_IN_CWD.exec(proc.cwd)?.[1];
 	if (fromCwd) {
-		const named = jobs.find((job) => job.id === fromCwd);
-		if (named) {
-			return named;
+		const picked = newestJob(jobsOnWorktree(fromCwd, jobs));
+		if (picked) {
+			return picked;
 		}
 	}
 	return jobs.find((job) => job.id.length > 8 && (proc.cwd.includes(job.id) || proc.command.includes(job.id)));
+}
+
+/** The directory name under `limen-worktrees` is the first job. Later continues record the same path. */
+function jobsOnWorktree(dirId: string, jobs: readonly JobSnap[]): JobSnap[] {
+	const needle = `limen-worktrees/${dirId}`;
+	return jobs.filter((job) => job.id === dirId || (job.worktree ?? "").includes(needle));
+}
+
+function newestJob(matches: readonly JobSnap[]): JobSnap | undefined {
+	const live = matches.filter((job) => !terminalJob(job.state));
+	const pool = live.length > 0 ? live : matches;
+	return pool.reduce<JobSnap | undefined>((best, job) => {
+		if (!best || (job.finishedAt ?? 0) >= (best.finishedAt ?? 0)) {
+			return job;
+		}
+		return best;
+	}, undefined);
+}
+
+/** True when this process or an ancestor is a running limen wrapper, or its pid is a live job's runner. */
+export function liveLimenAncestor(proc: Proc, procs: readonly Proc[], jobs: readonly JobSnap[]): boolean {
+	for (const row of processChain(proc, procs)) {
+		if (limenJobRunner(row.command)) {
+			return true;
+		}
+		if (jobs.some((job) => job.runnerPid === row.pid && !terminalJob(job.state))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function limenJobRunner(command: string): boolean {
+	return /(?:^|[\s/])limen(?:\s|$)/.test(command);
+}
+
+function processChain(proc: Proc, procs: readonly Proc[]): Proc[] {
+	const byPid = new Map(procs.map((row) => [row.pid, row]));
+	const chain: Proc[] = [];
+	let current: Proc | undefined = proc;
+	const seen = new Set<number>();
+	for (let hop = 0; hop < 24 && current && !seen.has(current.pid); hop++) {
+		seen.add(current.pid);
+		chain.push(current);
+		if (current.ppid <= 1) {
+			break;
+		}
+		current = byPid.get(current.ppid);
+	}
+	return chain;
+}
+
+/** A finished job's worktree is not free while a continue of it is still running. */
+export function liveWorktreeBlock(jobs: readonly JobSnap[], targetId: string): string | undefined {
+	const path = jobs.find((job) => job.id === targetId)?.worktree;
+	if (!path) {
+		return undefined;
+	}
+	const live = jobs.find((job) => job.id !== targetId && job.worktree === path && !terminalJob(job.state));
+	return live ? `live job ${live.id} uses this worktree` : undefined;
 }
 
 function terminalJob(state: string): boolean {

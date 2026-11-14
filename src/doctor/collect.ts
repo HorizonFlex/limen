@@ -131,6 +131,8 @@ async function jobSnap(dir: string, id: string, now: number): Promise<JobSnap | 
 		return;
 	}
 	const tools = Number(await textFile(join(dir, "tool-calls")));
+	const worktree = await textFile(join(dir, "worktree"));
+	const runner = Number(await textFile(join(dir, "pid")));
 	return {
 		id,
 		state,
@@ -139,6 +141,8 @@ async function jobSnap(dir: string, id: string, now: number): Promise<JobSnap | 
 		host: await textFile(join(dir, "host")),
 		label: await textFile(join(dir, "label")),
 		finishedAt,
+		...(worktree ? { worktree } : {}),
+		...(Number.isInteger(runner) && runner > 1 ? { runnerPid: runner } : {}),
 	};
 }
 
