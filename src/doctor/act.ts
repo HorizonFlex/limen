@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { showSeatNotification } from "../integrations/herdr.ts";
 import { textFile } from "../job/record.ts";
@@ -7,7 +7,7 @@ import { registeredProjects, seatDir } from "../project/seat.ts";
 import { posixQuote, type ShellText, shellText } from "../runtime/host-shell.ts";
 import { hostByAlias, loadHostPool } from "../runtime/hosts.ts";
 import { runBash } from "./bash.ts";
-import { redact } from "./parse.ts";
+import { type JobSnap, liveWorktreeBlock, redact } from "./parse.ts";
 import { TMP_STALE_HOURS } from "./policy.ts";
 
 const TERMINAL = new Set(["done", "failed", "stopped"]);
@@ -55,8 +55,9 @@ async function killOrphan(action: Record<string, unknown>): Promise<ActResult> {
 	const job = String(action.job);
 	const claimed = String(action.jobState);
 	const live = await jobState(job);
-	if (orphanKillBlock(live) || live !== claimed) {
-		return { ok: false, text: `job ${job} is ${live || "missing"} on the seat; not killed` };
+	const shared = liveWorktreeBlock(await jobRecords(), job);
+	if (orphanKillBlock(live) || live !== claimed || shared) {
+		return { ok: false, text: shared ?? `job ${job} is ${live || "missing"} on the seat; not killed` };
 	}
 	const pid = Number(action.pid);
 	if (pid === process.pid || pid === process.ppid) {
@@ -73,6 +74,29 @@ async function jobState(job: string): Promise<string> {
 		}
 	}
 	return "";
+}
+
+async function jobRecords(): Promise<JobSnap[]> {
+	const found: JobSnap[] = [];
+	for (const root of registeredProjects()) {
+		const jobs = join(root, ".limen", "jobs");
+		for (const id of await readdir(jobs).catch(() => [] as string[])) {
+			const state = await textFile(join(jobs, id, "state"));
+			if (!state) {
+				continue;
+			}
+			const worktree = await textFile(join(jobs, id, "worktree"));
+			found.push({
+				id,
+				state,
+				toolCalls: 0,
+				log: "",
+				host: "",
+				...(worktree ? { worktree } : {}),
+			});
+		}
+	}
+	return found;
 }
 
 async function runOn(host: string, script: string): Promise<ActResult> {
@@ -129,10 +153,11 @@ echo removed
 }
 
 function killScript(pid: number, job: string): string {
-	return `set -eu
+	return `${limenAncestorScript()}set -eu
 pid=${pid}
 job=${posixQuote(job)}
 if [ "$pid" -le 1 ]; then echo 'bad pid' >&2; exit 2; fi
+if limen_ancestor "$pid"; then echo 'live limen runner' >&2; exit 2; fi
 cwd=""
 if [ -d "/proc/$pid" ]; then
   cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo deleted)
@@ -145,6 +170,30 @@ case "$cwd" in
 esac
 kill -TERM "$pid"
 echo signaled
+`;
+}
+
+function limenAncestorScript(): string {
+	return `limen_ancestor() {
+  cur=$1
+  hops=0
+  while [ "$cur" -gt 1 ] && [ "$hops" -lt 24 ]; do
+    if [ -r "/proc/$cur/cmdline" ]; then
+      cmd=$(tr '\\0' ' ' < "/proc/$cur/cmdline" 2>/dev/null || true)
+      pp=$(awk '/^PPid:/{print $2; exit}' "/proc/$cur/status" 2>/dev/null || true)
+    else
+      cmd=$(ps -p "$cur" -o command= 2>/dev/null || true)
+      pp=$(ps -p "$cur" -o ppid= 2>/dev/null | tr -d ' ' || true)
+    fi
+    case "$cmd" in
+      *"/limen"|*"/limen "*|*" limen"|*" limen "*) return 0 ;;
+    esac
+    [ -n "$pp" ] || return 1
+    cur=$pp
+    hops=$((hops + 1))
+  done
+  return 1
+}
 `;
 }
 
