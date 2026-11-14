@@ -216,7 +216,7 @@ function noteCheckLine(
 	if (name !== "claude") {
 		saw[name] = true;
 	}
-	if (line === `${name} ok` || line.startsWith(`${name} ok `)) {
+	if (line.startsWith(`${name} ok `) || line === `${name} ok` || line.startsWith(`${name} info`)) {
 		set(name, true);
 	} else if (line === `${name} fail` || line === `${name} missing` || line.startsWith(`${name} missing`)) {
 		set(name, false);

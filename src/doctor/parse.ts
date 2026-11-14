@@ -23,8 +23,9 @@ export type ToolRow = { readonly name: string; readonly ok: boolean; readonly pa
 
 export type PytestDir = { readonly path: string; readonly ageHours: number; readonly inUse: boolean };
 
-export type Orphan = {
+export type Proc = {
 	readonly pid: number;
+	readonly ppid: number;
 	readonly cwdDeleted: boolean;
 	readonly cwd: string;
 	readonly command: string;
@@ -39,7 +40,7 @@ export type Probe = {
 	readonly zshenvHasPath: boolean;
 	readonly localPython: string;
 	readonly pytest: readonly PytestDir[];
-	readonly orphans: readonly Orphan[];
+	readonly procs: readonly Proc[];
 };
 
 export type JobSnap = {
@@ -48,6 +49,8 @@ export type JobSnap = {
 	readonly toolCalls: number;
 	readonly log: string;
 	readonly host: string;
+	readonly label?: string;
+	readonly finishedAt?: number;
 };
 
 export type SeatSnap = {
@@ -78,7 +81,7 @@ type ProbeBuild = {
 	path: string;
 	tools: ToolRow[];
 	pytest: PytestDir[];
-	orphans: Orphan[];
+	procs: Proc[];
 	tmpBlocksPercent: number | null;
 	tmpInodesPercent: number | null;
 	bridge: Probe["bridge"];
@@ -91,7 +94,7 @@ export function parseProbe(text: string): Probe {
 		path: "",
 		tools: [],
 		pytest: [],
-		orphans: [],
+		procs: [],
 		tmpBlocksPercent: null,
 		tmpInodesPercent: null,
 		bridge: "unknown",
@@ -113,7 +116,7 @@ function applyProbeLine(build: ProbeBuild, line: string): void {
 		applyToolLine(build, kind, rest);
 		return;
 	}
-	if (kind === "pytest" || kind === "orphan") {
+	if (kind === "pytest" || kind === "orphan" || kind === "proc") {
 		applyProcessLine(build, kind, rest);
 		return;
 	}
@@ -135,18 +138,43 @@ function applyProcessLine(build: ProbeBuild, kind: string | undefined, rest: str
 		build.pytest.push({ ageHours: Number(rest[0]) || 0, inUse: rest[1] === "1", path: rest.slice(2).join("\t") });
 		return;
 	}
-	if (kind !== "orphan" || rest.length < 4 || build.orphans.length >= 50) {
+	if (build.procs.length >= 2000) {
 		return;
 	}
-	const pid = Number(rest[0]);
-	if (Number.isInteger(pid) && pid > 1) {
-		build.orphans.push({
-			pid,
-			cwdDeleted: rest[1] === "1",
-			cwd: rest[2] ?? "",
-			command: rest.slice(3).join("\t"),
-		});
+	const row = kind === "proc" ? procFrom(rest) : legacyProc(kind === "orphan" ? rest : []);
+	if (row) {
+		build.procs.push(row);
 	}
+}
+
+function procFrom(rest: string[]): Proc | undefined {
+	if (rest.length < 5) {
+		return undefined;
+	}
+	return procRow(rest[0], rest[1], rest[2] === "1", rest[3] ?? "", rest.slice(4).join("\t"));
+}
+
+/** Older probe lines had no parent pid. They still name one process. */
+function legacyProc(rest: string[]): Proc | undefined {
+	if (rest.length < 4) {
+		return undefined;
+	}
+	return procRow(rest[0], "0", rest[1] === "1", rest[2] ?? "", rest.slice(3).join("\t"));
+}
+
+function procRow(
+	pidText: string | undefined,
+	ppidText: string | undefined,
+	cwdDeleted: boolean,
+	cwd: string,
+	command: string,
+): Proc | undefined {
+	const pid = Number(pidText);
+	const ppid = Number(ppidText);
+	if (!Number.isInteger(pid) || pid <= 1) {
+		return undefined;
+	}
+	return { pid, ppid: Number.isInteger(ppid) ? ppid : 0, cwdDeleted, cwd, command };
 }
 
 function applyStatusLine(build: ProbeBuild, kind: string | undefined, rest: string[], line: string): void {
@@ -218,7 +246,7 @@ export function probeFindings(host: string, probe: Probe, jobs: readonly JobSnap
 	return [
 		...tmpFindings(host, probe),
 		...toolFindings(host, probe, wantPython313),
-		...orphanFindings(host, probe.orphans, jobs),
+		...orphanFindings(host, probe.procs, jobs),
 	];
 }
 
@@ -243,27 +271,54 @@ export function seatFindings(seat: SeatSnap): Finding[] {
 	return findings;
 }
 
-/** A failed job with no tool calls, or a log that ran out of space or could not load the bridge. */
-export function jobFindings(jobs: readonly JobSnap[]): Finding[] {
+/** A failed job with no tool calls, ENOSPC, or a bridge that did not load. Old, superseded, and acked jobs are quiet. */
+export function jobFindings(
+	jobs: readonly JobSnap[],
+	opts: { readonly now?: number; readonly windowMs?: number; readonly acked?: ReadonlySet<string> } = {},
+): Finding[] {
+	const now = opts.now ?? Date.now();
+	const windowMs = opts.windowMs ?? DEFAULT_JOB_WINDOW_MS;
+	const acked = opts.acked ?? new Set<string>();
 	const findings: Finding[] = [];
 	for (const job of jobs) {
-		if (job.state !== "failed") {
+		if (!reportableFailure(job, jobs, now, windowMs)) {
 			continue;
 		}
 		const where = job.host || "seat";
-		if (job.toolCalls === 0) {
+		if (job.toolCalls === 0 && !acked.has(jobAck(job.id, "job-empty"))) {
 			findings.push(propose("job-empty", where, `${job.id} failed with 0 tool calls`));
 		}
-		if (/ENOSPC/.test(job.log)) {
+		if (/ENOSPC/.test(job.log) && !acked.has(jobAck(job.id, "job-enospc"))) {
 			findings.push(propose("job-enospc", where, `${job.id} failed with ENOSPC; a full /tmp drops the job log`));
 		}
-		if (/Unknown provider ["']claude-bridge["']/.test(job.log)) {
+		if (/Unknown provider ["']claude-bridge["']/.test(job.log) && !acked.has(jobAck(job.id, "job-provider"))) {
 			findings.push(
 				propose("job-provider", where, `${job.id} hit Unknown provider "claude-bridge"; pi-claude-bridge did not load`),
 			);
 		}
 	}
 	return findings;
+}
+
+export const DEFAULT_JOB_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+export function jobWindowMs(env: NodeJS.ProcessEnv = process.env): number {
+	const hours = Number(env.LIMEN_DOCTOR_JOB_HOURS);
+	return Number.isFinite(hours) && hours > 0 ? hours * 60 * 60 * 1000 : DEFAULT_JOB_WINDOW_MS;
+}
+
+export function jobAck(id: string, kind: string): string {
+	return `${kind} ${id}`;
+}
+
+export function jobAckLine(finding: Finding): string {
+	const id = finding.summary.split(" ")[0] ?? "";
+	return finding.id.startsWith("job-") && id ? jobAck(id, finding.id) : "";
+}
+
+/** launchctl print text for a running LaunchDaemon: state and a real pid. */
+export function launchdRunning(text: string): boolean {
+	return /\bstate = running\b/.test(text) && /\bpid = [1-9][0-9]*\b/.test(text);
 }
 
 export function parseUnpushed(text: string): { branch: string; upstream: string; track: string }[] {
@@ -313,8 +368,16 @@ export function checkLines(text: string): string[] {
 	return redact(text)
 		.split("\n")
 		.map((line) => line.trim())
-		.filter(Boolean)
+		.filter(shownCheckLine)
 		.slice(0, 40);
+}
+
+/** A logged-out host Claude is not a failure. Host jobs use the seat token. */
+function shownCheckLine(line: string): boolean {
+	if (!line || /^claude fail\b/.test(line) || /^claude missing\b/.test(line)) {
+		return false;
+	}
+	return !/loggedIn"\s*:\s*false/.test(line);
 }
 
 export function buildReport(input: {
@@ -431,12 +494,11 @@ function toolFindings(host: string, probe: Probe, wantPython313: boolean): Findi
 	return findings;
 }
 
-function orphanFindings(host: string, orphans: readonly Orphan[], jobs: readonly JobSnap[]): Finding[] {
+function orphanFindings(host: string, procs: readonly Proc[], jobs: readonly JobSnap[]): Finding[] {
 	const findings: Finding[] = [];
-	for (const orphan of orphans) {
-		const jobId = JOB_IN_CWD.exec(orphan.cwd)?.[1];
-		const job = jobId ? jobs.find((row) => row.id === jobId) : undefined;
-		const finished = job && (job.state === "done" || job.state === "failed" || job.state === "stopped");
+	for (const orphan of selectOrphans(procs, jobs)) {
+		const job = ownerJob(orphan, procs, jobs);
+		const finished = job !== undefined && terminalJob(job.state);
 		if (finished && job) {
 			findings.push(
 				act("orphan", host, `pid ${orphan.pid} left from finished job ${job.id}`, {
@@ -448,11 +510,96 @@ function orphanFindings(host: string, orphans: readonly Orphan[], jobs: readonly
 					cwdDeleted: orphan.cwdDeleted,
 				}),
 			);
-		} else {
-			findings.push(propose("orphan", host, `pid ${orphan.pid} ${orphan.command} cwd ${orphan.cwd || "unknown"}`));
+		} else if (orphan.cwdDeleted) {
+			findings.push(propose("orphan", host, `pid ${orphan.pid} ${orphan.command} cwd deleted`));
 		}
 	}
 	return findings;
+}
+
+/**
+ * A process is an orphan only when the job that owns it has finished, or its cwd is gone and it is not inside a
+ * running job. Pytest under /tmp/pytest-of-* belongs to the job of an ancestor, not to itself.
+ */
+export function selectOrphans(procs: readonly Proc[], jobs: readonly JobSnap[]): Proc[] {
+	return procs.filter((proc) => isOrphan(proc, procs, jobs));
+}
+
+function isOrphan(proc: Proc, procs: readonly Proc[], jobs: readonly JobSnap[]): boolean {
+	if (!leftoverCandidate(proc)) {
+		return false;
+	}
+	const job = ownerJob(proc, procs, jobs);
+	if (job) {
+		return terminalJob(job.state);
+	}
+	return proc.cwdDeleted;
+}
+
+function leftoverCandidate(proc: Proc): boolean {
+	return /limen-worktrees|pytest-of|http\.server|claude-agent-sdk|\/tmp\/tmp\./.test(`${proc.cwd} ${proc.command}`);
+}
+
+function ownerJob(proc: Proc, procs: readonly Proc[], jobs: readonly JobSnap[]): JobSnap | undefined {
+	const byPid = new Map(procs.map((row) => [row.pid, row]));
+	let current: Proc | undefined = proc;
+	const seen = new Set<number>();
+	for (let hop = 0; hop < 24 && current && !seen.has(current.pid); hop++) {
+		seen.add(current.pid);
+		const owned = jobForProc(current, jobs);
+		if (owned) {
+			return owned;
+		}
+		if (current.ppid <= 1) {
+			return undefined;
+		}
+		current = byPid.get(current.ppid);
+	}
+	return undefined;
+}
+
+function jobForProc(proc: Proc, jobs: readonly JobSnap[]): JobSnap | undefined {
+	const fromCwd = JOB_IN_CWD.exec(proc.cwd)?.[1];
+	if (fromCwd) {
+		const named = jobs.find((job) => job.id === fromCwd);
+		if (named) {
+			return named;
+		}
+	}
+	return jobs.find((job) => job.id.length > 8 && (proc.cwd.includes(job.id) || proc.command.includes(job.id)));
+}
+
+function terminalJob(state: string): boolean {
+	return state === "done" || state === "failed" || state === "stopped";
+}
+
+function reportableFailure(job: JobSnap, jobs: readonly JobSnap[], now: number, windowMs: number): boolean {
+	if (job.state !== "failed" || superseded(job, jobs)) {
+		return false;
+	}
+	const finished = job.finishedAt ?? 0;
+	return finished <= 0 || now - finished <= windowMs;
+}
+
+function superseded(job: JobSnap, jobs: readonly JobSnap[]): boolean {
+	const feature = featureOf(job);
+	if (!feature) {
+		return false;
+	}
+	return jobs.some((other) => other.id !== job.id && featureOf(other) === feature && newerJob(other, job));
+}
+
+function newerJob(other: JobSnap, job: JobSnap): boolean {
+	if (other.state === "running" || other.state === "starting" || other.state === "queued") {
+		return true;
+	}
+	const later = other.finishedAt ?? 0;
+	const earlier = job.finishedAt ?? 0;
+	return later > 0 && earlier > 0 && later > earlier;
+}
+
+function featureOf(job: JobSnap): string {
+	return `${job.label ?? ""}\n${job.id}`.match(/\bf\d{3,}\b/i)?.[0]?.toUpperCase() ?? "";
 }
 
 function seatLine(seat: DoctorReport["seat"]): string {

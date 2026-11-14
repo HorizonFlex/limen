@@ -2,15 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { orphanKillBlock } from "../src/doctor/act.ts";
 import {
 	hostCheckFindings,
 	jobFindings,
+	launchdRunning,
 	parseProbe,
 	parseSeat,
 	parseUnpushed,
 	probeFindings,
 	redact,
 	seatFindings,
+	selectOrphans,
 	selectUnpushed,
 } from "../src/doctor/parse.ts";
 import { classifyAction, TMP_STALE_HOURS } from "../src/doctor/policy.ts";
@@ -147,3 +150,103 @@ test("the probe script reads inodes and does not open token files", async () => 
 	assert.equal(script.includes(".token"), false);
 	assert.equal(script.includes("claude-accounts"), false);
 });
+
+const running = "2026-11-14-f267-d-1ee198cc";
+const older = "2026-11-14-f267-b-aaaa1111";
+
+test("processes of a running job are not orphans, including pytest children", () => {
+	const work = `/home/ada/src/.limen-sandbox-limen-worktrees/${running}`;
+	const procs = [
+		{ pid: 30, ppid: 1, cwdDeleted: false, cwd: work, command: "pi --mode json" },
+		{ pid: 40, ppid: 30, cwdDeleted: false, cwd: "/tmp/tmp.abc", command: "bash /tmp/tmp.abc" },
+		{ pid: 50, ppid: 40, cwdDeleted: false, cwd: "/tmp/pytest-of-ada/popen-gw0", command: "pytest" },
+		{ pid: 60, ppid: 30, cwdDeleted: false, cwd: work, command: "claude-agent-sdk" },
+		{
+			pid: 70,
+			ppid: 1,
+			cwdDeleted: true,
+			cwd: `/home/ada/src/.limen-sandbox-limen-worktrees/${older} (deleted)`,
+			command: "python -m http.server",
+		},
+	];
+	const jobs = [
+		{ id: running, state: "running", toolCalls: 4, log: "", host: "win" },
+		{ id: older, state: "failed", toolCalls: 0, log: "", host: "win", finishedAt: Date.now() - 60_000 },
+	];
+	const orphans = selectOrphans(procs, jobs);
+	assert.deepEqual(
+		orphans.map((proc) => proc.pid),
+		[70],
+	);
+	const findings = probeFindings("win", { ...emptyProbe(), procs }, jobs, true);
+	assert.equal(
+		findings.some((finding) => finding.summary.includes(running)),
+		false,
+	);
+	assert.equal(findings.find((finding) => finding.id === "orphan")?.severity, "act");
+	assert.equal(orphanKillBlock("running"), "job is running");
+	assert.equal(orphanKillBlock("done"), undefined);
+});
+
+test("a logged-out host Claude is not a doctor finding", () => {
+	const findings = hostCheckFindings("win", 'claude fail\nclaude {"loggedIn": false}\nclaude info not logged in');
+	assert.equal(
+		findings.some((finding) => /claude|loggedIn/i.test(finding.summary)),
+		false,
+	);
+});
+
+test("failed jobs outside 6h, superseded by a later attempt, or acked are quiet", () => {
+	const now = Date.now();
+	const jobs = [
+		{ id: older, state: "failed", toolCalls: 0, log: "ENOSPC", host: "win", finishedAt: now - 60 * 60 * 1000 },
+		{ id: running, state: "running", toolCalls: 3, log: "", host: "win" },
+		{
+			id: "2026-11-14-f269-c-bbbb2222",
+			state: "failed",
+			toolCalls: 0,
+			log: "",
+			host: "win",
+			finishedAt: now - 7 * 60 * 60 * 1000,
+		},
+		{
+			id: "2026-11-14-old-empty",
+			state: "failed",
+			toolCalls: 0,
+			log: "",
+			host: "win",
+			finishedAt: now - 30 * 60 * 1000,
+		},
+	];
+	const open = jobFindings(jobs, { now, windowMs: 6 * 60 * 60 * 1000 });
+	assert.deepEqual(
+		open.map((finding) => finding.summary.split(" ")[0]),
+		["2026-11-14-old-empty"],
+	);
+	const acked = jobFindings(jobs, {
+		now,
+		windowMs: 6 * 60 * 60 * 1000,
+		acked: new Set(["job-empty 2026-11-14-old-empty"]),
+	});
+	assert.equal(acked.length, 0);
+});
+
+test("playwright is present when the Python module imports, and a running launchd job is up", () => {
+	const probe = parseProbe(
+		"tool\tplaywright\tok\tpython-module\t-\ntool\tpython3\tok\t/usr/bin/python3\t3.13.1\ntool\tpi\tok\t/usr/bin/pi\t-\ntool\tnode\tok\t/usr/bin/node\t-",
+	);
+	assert.equal(
+		probeFindings("win", { ...emptyProbe(), ...probe, procs: [] }, [], true).some(
+			(finding) => finding.id === "tool-missing",
+		),
+		false,
+	);
+	const text = "state = running\npid = 884\nprogram = /Users/agent/.local/bin/hc\n";
+	assert.equal(launchdRunning(text), true);
+	assert.equal(launchdRunning("state = waiting\npid = 884"), false);
+	assert.equal(launchdRunning("state = running\npid = 0"), false);
+});
+
+function emptyProbe() {
+	return parseProbe("");
+}

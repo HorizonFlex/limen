@@ -11,7 +11,7 @@ The only repair command is `limen doctor act '<json>'`. `--dry-run` classifies a
 Allowed:
 
 - `clean-tmp`: one entry directly under `/tmp` (or `/private/tmp`), at least 2 hours old, not in use. `pytest-of-*` is the usual name. The command checks the age and the users again; do not `rm` it yourself.
-- `kill-orphan`: one pid of a job the seat has already marked `done`, `failed`, or `stopped`.
+- `kill-orphan`: one pid of a job the seat has already marked `done`, `failed`, or `stopped`. The command reads the job record again and refuses while that job is running. A process whose cwd is under `/tmp/pytest-of-*` belongs to the job of its parent, not to itself.
 - `fix-zshenv-path`: append one `export PATH="…:$PATH"` line to that host's `~/.zshenv`. Non-interactive ssh is a zsh login shell; `.zshrc` is not read.
 - `hosts-check`: re-run `limen hosts check <alias>` after a PATH fix. It does not change the host.
 - `restart-herdr`: start herdr on the seat when it is not running. If it is already running, the command leaves it. Do not kill it.

@@ -12,6 +12,11 @@ import { TMP_STALE_HOURS } from "./policy.ts";
 
 const TERMINAL = new Set(["done", "failed", "stopped"]);
 
+/** A kill is refused unless the seat record says the job has already finished. */
+export function orphanKillBlock(state: string): string | undefined {
+	return TERMINAL.has(state) ? undefined : `job is ${state || "missing"}`;
+}
+
 export type ActResult = { readonly ok: boolean; readonly text: string };
 
 /** Carries out one action that `classifyAction` already allowed. Rechecks the facts the model claimed. */
@@ -50,7 +55,7 @@ async function killOrphan(action: Record<string, unknown>): Promise<ActResult> {
 	const job = String(action.job);
 	const claimed = String(action.jobState);
 	const live = await jobState(job);
-	if (!TERMINAL.has(live) || live !== claimed) {
+	if (orphanKillBlock(live) || live !== claimed) {
 		return { ok: false, text: `job ${job} is ${live || "missing"} on the seat; not killed` };
 	}
 	const pid = Number(action.pid);
@@ -156,7 +161,11 @@ echo appended
 
 function herdrScript(): string {
 	return `set +e
-if pgrep -x herdr >/dev/null 2>&1 || pgrep -x herdr-core >/dev/null 2>&1 || pgrep -f '[h]erdr-core' >/dev/null 2>&1; then
+if pgrep -x herdr >/dev/null 2>&1; then
+  echo 'herdr already running'
+  exit 0
+fi
+if command -v launchctl >/dev/null 2>&1 && launchctl print system/dev.agent.herdr-core 2>/dev/null | grep -q 'state = running'; then
   echo 'herdr already running'
   exit 0
 fi

@@ -1,13 +1,27 @@
 #!/bin/bash
 # Read-only seat checks: daemons, disk, memory pressure, load. No tokens.
 set +e
+herdr_core_up() {
+	label=dev.agent.herdr-core
+	if command -v launchctl >/dev/null 2>&1; then
+		printed=$(launchctl print "system/$label" 2>/dev/null || true)
+		if printf '%s\n' "$printed" | grep -q 'state = running' && printf '%s\n' "$printed" | grep -Eq 'pid = [1-9][0-9]*'; then
+			return 0
+		fi
+	fi
+	plist="/Library/LaunchDaemons/$label.plist"
+	prog=""
+	if [ -f "$plist" ] && command -v plutil >/dev/null 2>&1; then
+		prog=$(plutil -extract Program raw "$plist" 2>/dev/null || true)
+	fi
+	if [ -n "$prog" ] && pgrep -f "[${prog%${prog#?}}]${prog#?}" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
 if pgrep -x herdr >/dev/null 2>&1; then printf 'daemon\therdr\tup\n'; else printf 'daemon\therdr\tdown\n'; fi
-# [h] keeps this script's own text from matching the pattern.
-if pgrep -x herdr-core >/dev/null 2>&1 || pgrep -f '[h]erdr-core' >/dev/null 2>&1; then
-	printf 'daemon\therdr-core\tup\n'
-else
-	printf 'daemon\therdr-core\tdown\n'
-fi
+# herdr-core's process is not named herdr-core. LaunchDaemon dev.agent.herdr-core runs ~/.local/bin/hc.
+if herdr_core_up; then printf 'daemon\therdr-core\tup\n'; else printf 'daemon\therdr-core\tdown\n'; fi
 if pgrep -x moshi-hook >/dev/null 2>&1; then printf 'daemon\tmoshi-hook\tup\n'; else printf 'daemon\tmoshi-hook\tdown\n'; fi
 if [ -S /var/lib/limen-token/token.sock ] || pgrep -f '[l]imen-token-broker' >/dev/null 2>&1; then
 	printf 'daemon\ttoken-broker\tup\n'
