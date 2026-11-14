@@ -3,6 +3,7 @@ import { boardCommand } from "./commands/board-view.ts";
 import { closeCommand } from "./commands/close.ts";
 import { continueCommand } from "./commands/continue.ts";
 import { diffCommand } from "./commands/diff.ts";
+import { doctorCommand } from "./commands/doctor.ts";
 import { githubCommand } from "./commands/github.ts";
 import { groupCommand } from "./commands/group.ts";
 import { highlightCommand } from "./commands/highlight.ts";
@@ -40,6 +41,7 @@ const COMMANDS = {
 	github: githubCommand,
 	group: groupCommand,
 	hosts: hostsCommand,
+	doctor: doctorCommand,
 	accounts: accountsCommand,
 	spawn: spawnCommand,
 	continue: continueCommand,
@@ -75,6 +77,7 @@ const COMMANDS = {
 	| "github"
 	| "group"
 	| "hosts"
+	| "doctor"
 	| "accounts"
 	| "diff"
 	| "steer"
@@ -137,6 +140,8 @@ usage:
   limen queue                                   # the seat's start queue in start order, and the CPU and memory reading against the gate
   limen prune [--retire [--dry-run]]           # --retire deletes finished, failed, or stopped job records whose branch is landed (ancestor or cherry-pick) or deleted
   limen hosts check <alias>                    # over ssh: Pi, git ls-remote, Claude auth; the seat account is named, never printed
+  limen doctor [--json|--md]                   # read-only stack report; exit 2 when it has findings. See docs/seat/stack-doctor.md
+  limen doctor act [--dry-run] <json>          # one allowlisted repair, or a refusal that notifies the human
   limen hosts prune [--dry-run]                # delete origin limen/<id> branches of terminal jobs
   limen accounts                               # which Claude account is active and which are spent, plus 5h/week usage per account; read it before waiting on a quota reset
   limen rule                                    # the seat-wide rules that hold now
