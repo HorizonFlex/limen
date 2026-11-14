@@ -380,8 +380,10 @@ function loadOauth(jobId: string): string {
 if [ -f "$oauth" ]; then
   CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '\\n' < "$oauth")
   export CLAUDE_CODE_OAUTH_TOKEN
-  ANTHROPIC_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
-  export ANTHROPIC_OAUTH_TOKEN
+  case "$CLAUDE_CODE_OAUTH_TOKEN" in
+    sk-ant-oat*) ;;
+    *) export ANTHROPIC_API_KEY="$CLAUDE_CODE_OAUTH_TOKEN" ;;
+  esac
   rm -f "$oauth"
 fi`;
 }

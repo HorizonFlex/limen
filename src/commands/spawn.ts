@@ -46,6 +46,7 @@ import {
 import { ACCOUNT_FILE, chooseHostAccount } from "../runtime/host-account.ts";
 import { INPUTS_FILE, validateInputs } from "../runtime/host-inputs.ts";
 import {
+	assertHostCanAuth,
 	assertHostEngine,
 	assertHostProject,
 	hostByAlias,
@@ -240,6 +241,7 @@ async function preflightSpawn(
 	}
 	const found = hostByAlias(loadHostPool(), host);
 	await assertHostProject(found, project);
+	await assertHostCanAuth(found, provider, model);
 	await assertHostEngine(found, model, provider);
 }
 

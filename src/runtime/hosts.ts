@@ -9,6 +9,7 @@ import { resolveSeatAccount } from "./claude-account.ts";
 import { processAlive } from "./contain.ts";
 import { ENGINES, engineRoute } from "./engine.ts";
 import { type GithubBroker, parseGithubBroker } from "./github-broker.ts";
+import { hostClaudeRoute } from "./host-auth.ts";
 import {
 	type HostClone,
 	type HostPlatform,
@@ -293,6 +294,42 @@ export function hostByAlias(pool: HostPool, alias: string): RemoteHost {
 		throw new Error(`--host ${alias} is not in ${hostsFile()}`);
 	}
 	return host;
+}
+
+/**
+ * Refuses a host that cannot sign this provider in with the seat account. An anthropic model billed to a Claude
+ * Code OAuth token needs the bridge. Overflow skips that host; `--host` throws before the job starts.
+ */
+export async function assertHostCanAuth(host: RemoteHost, provider?: string, model?: string): Promise<void> {
+	const reason = await hostAuthRefusal(host, provider, model);
+	if (reason) {
+		throw new Error(`--host ${host.alias}: ${reason}`);
+	}
+}
+
+/** Why this host cannot run the job, or undefined when it can. Does not claim a slot. */
+export async function hostAuthRefusal(
+	host: RemoteHost,
+	provider?: string,
+	model?: string,
+): Promise<string | undefined> {
+	const plan = hostClaudeRoute({ provider, model, token: resolveSeatAccount()?.token });
+	if (!plan.ok) {
+		return plan.reason;
+	}
+	if (!plan.bridged) {
+		return undefined;
+	}
+	const result = await shellText(host, hostEngineScript(host, true), 25_000);
+	if (result.code === 0) {
+		return undefined;
+	}
+	const detail = `${result.stdout}\n${result.stderr}`
+		.split("\n")
+		.map((line) => line.trim())
+		.find((line) => line.startsWith("bridge missing") || line.startsWith("pi is not"));
+	const why = detail || "bridge check failed";
+	return plan.mapped ? `${plan.mapped}; ${why}` : why;
 }
 
 /** Pi and, when the model is bridged, the Claude bridge, on the host. The seat's PATH is not consulted. */
@@ -606,6 +643,11 @@ async function pickHost(
 		const login = await hostLoginProblem(host, seatHasAccount, stop);
 		if (login) {
 			notes.push(`${host.alias} skipped: ${login}`);
+			continue;
+		}
+		const auth = await hostAuthRefusal(host, process.env.LIMEN_PROVIDER, process.env.LIMEN_MODEL);
+		if (auth) {
+			notes.push(`${host.alias} skipped: ${auth}`);
 			continue;
 		}
 		const probed = await probeHostDetailed(host, stop);

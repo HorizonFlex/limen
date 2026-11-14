@@ -6,7 +6,14 @@ import { repoRoot } from "../project/git.ts";
 import { registeredProjects } from "../project/seat.ts";
 import { resolveSeatAccount } from "../runtime/claude-account.ts";
 import { githubTokenLines } from "../runtime/github-broker.ts";
-import { configuredClones, hostCheckScript, type RemoteHost, shellText } from "../runtime/host-shell.ts";
+import { seatProviderReport } from "../runtime/host-auth.ts";
+import {
+	configuredClones,
+	hostCheckScript,
+	hostEngineScript,
+	type RemoteHost,
+	shellText,
+} from "../runtime/host-shell.ts";
 import { hostByAlias, loadHostPool, originKey } from "../runtime/hosts.ts";
 
 /** `limen hosts check ALIAS` and `limen hosts prune [--dry-run]`. */
@@ -46,6 +53,11 @@ async function checkHost(args: readonly string[]): Promise<void> {
 			? `${host.alias}: seat account ${account.name} (passed to a host job as CLAUDE_CODE_OAUTH_TOKEN; not stored there)`
 			: `${host.alias}: no seat Claude account; a host job uses the host's own login`,
 	);
+	const bridge = await shellText(host, hostEngineScript(host, true), 25_000);
+	const bridgeOk = bridge.code === 0 && bridge.stdout.includes("bridge ok");
+	for (const line of seatProviderReport(host.alias, account?.name, account?.token, bridgeOk)) {
+		console.log(line);
+	}
 	if (report.claudeKeychain) {
 		console.log(
 			`${host.alias}: keychain -25308: non-interactive ssh cannot unlock the login keychain. Host jobs use a file token on the seat; see docs/hosts.md.`,

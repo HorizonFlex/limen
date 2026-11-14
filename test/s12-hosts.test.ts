@@ -3,11 +3,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { hostClaudeRoute, seatProviderReport } from "../src/runtime/host-auth.ts";
 import {
 	cmdQuote,
 	type HostPlatform,
@@ -247,7 +248,10 @@ test("the launch script quotes a label and a task for both platforms and passes 
 	assert.match(script, /export PATH='\/opt\/homebrew\/bin':"\$PATH"/);
 	assert.match(script, /My Repo/);
 	assert.match(script, /limen\/job-1/);
-	assert.match(script, /export CLAUDE_CODE_OAUTH_TOKEN[\s\S]*ANTHROPIC_OAUTH_TOKEN="\$CLAUDE_CODE_OAUTH_TOKEN"/);
+	assert.match(script, /export CLAUDE_CODE_OAUTH_TOKEN/);
+	assert.match(script, /sk-ant-oat\*\) ;;/);
+	assert.match(script, /export ANTHROPIC_API_KEY="\$CLAUDE_CODE_OAUTH_TOKEN"/);
+	assert.doesNotMatch(script, /ANTHROPIC_OAUTH_TOKEN/);
 	const syntax = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
 	assert.equal(syntax.status, 0, syntax.stderr);
 	const decoded = spawnSync(
@@ -423,6 +427,34 @@ test("a darwin probe over the BatchMode ssh command reads memory_pressure even w
 	assert.equal(reading.memoryFree, 48);
 });
 
+test("an anthropic host job is rewritten to the bridge, and the check report names no token", () => {
+	const token = "sk-ant-oat01-test-token-value";
+	const mapped = hostClaudeRoute({ provider: "anthropic", model: "claude-opus-5-5", token });
+	assert.equal(mapped.ok, true);
+	if (mapped.ok) {
+		assert.equal(mapped.model, "claude-bridge/claude-opus-5-5");
+		assert.equal(mapped.mapped, "anthropic/claude-opus-5-5 -> claude-bridge/claude-opus-5-5");
+	}
+	const slash = hostClaudeRoute({ model: "anthropic/claude-opus-5-5", token });
+	assert.equal(slash.ok && slash.model, "claude-bridge/claude-opus-5-5");
+	const key = hostClaudeRoute({
+		provider: "anthropic",
+		model: "claude-opus-5-5",
+		token: "sk-ant-api01-test-key-value",
+	});
+	assert.equal(key.ok && key.apiKey, true);
+	assert.equal(key.ok && key.bridged, false);
+	const missing = hostClaudeRoute({ provider: "anthropic", model: "claude-opus-5-5" });
+	assert.equal(missing.ok, false);
+	const lines = seatProviderReport("win", "acc4", token, true);
+	assert.match(lines[0] ?? "", /claude-bridge seat account acc4: ok/);
+	assert.match(lines[1] ?? "", /anthropic seat account acc4: runs as claude-bridge/);
+	assert.equal(lines.join("\n").includes(token), false);
+	const blocked = seatProviderReport("win", "acc4", token, false);
+	assert.match(blocked[1] ?? "", /unavailable, no pi-claude-bridge/);
+	assert.match(seatProviderReport("win", undefined, undefined, false).join("\n"), /no seat account/);
+});
+
 test("the login probe says whether the host's Claude is logged in, missing, or logged out", async () => {
 	const bin = await mkdtemp(join(tmpdir(), "limen-claude-"));
 	const run = (env: Record<string, string>) =>
@@ -566,6 +598,71 @@ test("a review on a host fast-forwards the candidate and keeps the handoff", asy
 		assert.equal(plant.jobFile(made, id, "host"), alias);
 	} finally {
 		await made.cleanup();
+	}
+});
+
+test("an anthropic host job uses the bridge when it is installed and stays on the seat when it is not", async () => {
+	const seat = await remotePlant("darwin", "mbp");
+	const token = "sk-ant-oat01-test-token-value";
+	const accounts = join(seat.made.parent, "accounts");
+	await mkdir(accounts);
+	await writeFile(join(accounts, "active"), "work\n");
+	await writeFile(join(accounts, "work.token"), `${token}\n`);
+	const env = { ...seat.env, LIMEN_CLAUDE_ACCOUNTS: accounts, FAKE_SSH_SECRET: token };
+	try {
+		const refused = plant.limen(
+			seat.made,
+			["spawn", "--host", "mbp", "--provider", "anthropic", "--model", "claude-opus-5-5", "finish"],
+			{ env },
+		);
+		assert.notEqual(refused.status, 0);
+		assert.match(refused.stderr, /anthropic\/claude-opus-5-5 -> claude-bridge\/claude-opus-5-5/);
+		assert.match(refused.stderr, /no pi-claude-bridge/);
+		assert.equal(refused.stderr.includes(token), false);
+		const home = seat.made.env.HOME;
+		if (!home) {
+			throw new Error("plant home missing");
+		}
+		const bridge = join(home, ".pi/agent/npm/node_modules/pi-claude-bridge");
+		await mkdir(bridge, { recursive: true });
+		await writeFile(join(bridge, "package.json"), '{"type":"module","exports":{".":"./index.js"}}\n');
+		await writeFile(join(bridge, "index.js"), "export default function bridge() {}\n");
+		const id = plant.spawnJob(
+			seat.made,
+			"finish\nfinish bridged",
+			["--host", "mbp", "--provider", "anthropic", "--model", "claude-opus-5-5", "--label", "bridged"],
+			{ env },
+		);
+		const outcome = plant.waitJob(seat.made, id, { env });
+		const logged = plant.jobFile(seat.made, id, "log");
+		assert.equal(outcome, "done", logged);
+		assert.match(logged, /anthropic\/claude-opus-5-5 -> claude-bridge\/claude-opus-5-5/);
+		assert.equal(logged.includes(token), false);
+		const poolPath = join(seat.made.parent, ".limen", "hosts.json");
+		await writeFile(poolPath, readFileSync(poolPath, "utf8").replace('"overflow": false', '"overflow": true'));
+		await rm(bridge, { recursive: true, force: true });
+		await writeFile(join(seat.made.parent, "start-reading.json"), '{"cpuIdle":0,"memoryFree":0}\n');
+		const stayed = plant.spawnJob(
+			seat.made,
+			"finish\nfinish stayed",
+			["--provider", "anthropic", "--model", "claude-opus-5-5", "--label", "stay"],
+			{ env },
+		);
+		const dir = join(seat.made.root, ".limen", "jobs", stayed);
+		await plant.until(
+			dir,
+			() => existsSync(join(dir, "log")) && readFileSync(join(dir, "log"), "utf8").includes("no pi-claude-bridge"),
+		);
+		await writeFile(join(seat.made.parent, "start-reading.json"), '{"cpuIdle":100,"memoryFree":100}\n');
+		assert.equal(plant.waitJob(seat.made, stayed, { env }), "done");
+		assert.equal(existsSync(join(dir, "host")), false);
+		assert.match(readFileSync(join(dir, "log"), "utf8"), /none free \(mbp skipped: anthropic\/claude-opus-5-5/);
+		const check = plant.limen(seat.made, ["hosts", "check", "mbp"], { env });
+		assert.match(check.stdout, /claude-bridge seat account work: no pi-claude-bridge/);
+		assert.match(check.stdout, /anthropic seat account work: unavailable, no pi-claude-bridge/);
+		assert.equal(check.stdout.includes(token), false);
+	} finally {
+		await seat.made.cleanup();
 	}
 });
 
