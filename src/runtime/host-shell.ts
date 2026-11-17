@@ -350,7 +350,7 @@ chmod 600 ${dest}
 `;
 }
 
-function loadGithub(jobId: string, author: LaunchScript["author"]): string {
+export function loadGithub(jobId: string, author: LaunchScript["author"]): string {
 	const dest = posixQuote(ghPath(jobId));
 	const authorLines = author
 		? [
@@ -360,17 +360,19 @@ function loadGithub(jobId: string, author: LaunchScript["author"]): string {
 				`export GIT_COMMITTER_EMAIL=${posixQuote(author.email)}`,
 			].join("\n")
 		: "";
-	// The helper reads GH_TOKEN when git asks. The value itself does not contain the token. It is tried before a
-	// helper already configured on the host, and an ssh GitHub url is fetched over HTTPS so the token is what pushes.
+	// The helper reads the token file each time git asks, so a token the seat rewrites while the job runs is used from
+	// then on (a GitHub installation token lasts one hour; a job may run longer). GH_TOKEN, read once at start, is the
+	// fallback. The helper is tried before a helper already configured on the host, and an ssh GitHub url is fetched
+	// over HTTPS so the token is what pushes. The file is removed with the job's other host files at cleanup.
 	return `ghfile=${dest}
 if [ -f "$ghfile" ]; then
   GH_TOKEN=$(tr -d '\\n' < "$ghfile")
   export GH_TOKEN
   export GITHUB_TOKEN="$GH_TOKEN"
-  rm -f "$ghfile"
+  export LIMEN_GH_FILE="$ghfile"
   export GIT_CONFIG_COUNT=2
   export GIT_CONFIG_KEY_0=credential.helper
-  export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+  export GIT_CONFIG_VALUE_0='!f() { t=$(tr -d "\\n" < "$LIMEN_GH_FILE" 2>/dev/null); [ -n "$t" ] || t=$GH_TOKEN; echo username=x-access-token; echo "password=$t"; }; f'
   export GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
   export GIT_CONFIG_VALUE_1=git@github.com:
 fi
