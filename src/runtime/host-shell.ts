@@ -205,7 +205,7 @@ export function launchScript(input: LaunchScript): string {
 		`jobdir=${posixQuote(jobDir)}`,
 		`wt=${posixQuote(worktree)}`,
 		`branch=${posixQuote(input.branch)}`,
-		`mkdir -p "$jobdir/steer/inbox" "$jobdir/steer/delivered" "$jobdir/session" "$jobdir/outputs"`,
+		`mkdir -p "$jobdir/steer/inbox" "$jobdir/steer/delivered" "$jobdir/session" "$jobdir/outputs" "$jobdir/tmp"`,
 		decodeTo(`"$jobdir/task.md"`, "LIMEN_TASK", task),
 		`echo "limen-remote: fetch $branch" >&2`,
 		`git -C "$root" fetch origin "$branch:$branch"`,
@@ -218,6 +218,9 @@ export function launchScript(input: LaunchScript): string {
 		"export LIMEN_JOB=1",
 		'export LIMEN_INPUTS="$jobdir/inputs"',
 		'export LIMEN_OUTPUTS="$jobdir/outputs"',
+		// The host's shared temp directory may be memory-backed and small. A job's scratch space lives with its job folder, on
+		// the host's disk, and goes away with it when the job is cleaned up.
+		'export TMPDIR="$jobdir/tmp"',
 		loadOauth(input.jobId),
 		`export LIMEN_JOB_ID=${posixQuote(input.jobId)}`,
 		`export LIMEN_JOB_LABEL=${posixQuote(input.label)}`,
