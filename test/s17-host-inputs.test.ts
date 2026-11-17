@@ -84,3 +84,17 @@ test("the host job gets LIMEN_INPUTS and LIMEN_OUTPUTS, and the bundle brings ou
 	assert.match(bundle, /for name in [^\n]*\boutputs\b/);
 	assert.match(bundle, /outputs over 32 MB not copied/);
 });
+
+test("a host job keeps its scratch space in its job folder, not in the shared temp directory", () => {
+	const script = launchScript({
+		host: remote,
+		jobId: "job-1",
+		branch: "limen/job-1",
+		label: "x",
+		piArgs: ["--approve"],
+		bridged: false,
+		task: "t\n",
+	});
+	assert.match(script, /export TMPDIR="\$jobdir\/tmp"/);
+	assert.match(script, /mkdir -p [^\n]*"\$jobdir\/tmp"/);
+});

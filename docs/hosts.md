@@ -272,6 +272,10 @@ A seat token from `claude setup-token` starts with `sk-ant-oat`. Pi's own `anthr
 
 `limen accounts` prints which account is active and which are spent, as the seat's own tool reports it. A quota message names the reset of the account that failed, and the seat may have switched since, so a coordinator runs this before it waits on that time. Under the report it lists how full each account is: the five-hour and the weekly share used, and when each window resets. Limen reads that with one single-token request per account (the answer carries those figures in its headers, a refused call included), using the token files in `~/.claude-accounts` (`LIMEN_CLAUDE_ACCOUNTS` names another directory). Two files holding the same token are shown as one account. Two different tokens of one subscription report identical windows; such accounts are marked `(same limit as NAME)`, because they share one limit. `LIMEN_USAGE_URL` and `LIMEN_USAGE_MODEL` override the endpoint and the model of that request. Limen keeps no account state of its own. The tool is `claude-account-rotate status`, found on `PATH` or in `~/seat/bin`; `LIMEN_ACCOUNT_STATUS` names another executable that prints a report and takes no arguments, and when set it is the only source.
 
+### Scratch space of a host job
+
+A host job runs with `TMPDIR` set to `tmp` inside its own job folder, on the host's disk, and that folder goes away with the job at cleanup. The host's shared temp directory may be memory-backed and small, so programs that follow `TMPDIR` no longer fill it. A program that writes to a fixed `/tmp` path ignores `TMPDIR`; the coordinator template tells coordinators to keep large work files on disk.
+
 ### Choosing the account a host job bills
 
 ```bash
