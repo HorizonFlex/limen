@@ -87,9 +87,12 @@ export async function runRemoteJob(job: RemoteJob): Promise<void> {
 			await appendLimenLog(job.jobDir, `remote cleanup failed: ${result.stderr.trim() || result.code}`).catch(() => {});
 		}
 	};
+	let stopRefresh: (() => void) | undefined;
 	try {
 		const delivered = await pushAndNote(job);
+		stopRefresh = delivered.githubRepo ? keepGithubFresh(job, delivered.githubRepo, delivered.secrets) : undefined;
 		const outcome = await streamJob(job, delivered);
+		stopRefresh?.();
 		await copyBack(job);
 		await bringBack(job, outcome.cause === "stop");
 		if (outcome.cause === "" && outcome.code === 0 && job.branch.startsWith("limen/") && loadHostPool().pruneBranches) {
@@ -101,13 +104,17 @@ export async function runRemoteJob(job: RemoteJob): Promise<void> {
 	} catch (error) {
 		await settle("failed", error instanceof Error ? error.message : String(error));
 	} finally {
+		stopRefresh?.();
 		await cleanup();
 	}
 }
 
 type Delivered = {
-	readonly secrets: readonly string[];
+	/** Strings kept out of the log. A refreshed GitHub token is added while the job runs. */
+	readonly secrets: string[];
 	readonly author?: { readonly name: string; readonly email: string };
+	/** The repository the seat mints a GitHub token for, when it handed the host one. */
+	readonly githubRepo?: string;
 };
 
 async function pushAndNote(job: RemoteJob): Promise<Delivered> {
@@ -128,7 +135,11 @@ async function pushAndNote(job: RemoteJob): Promise<Delivered> {
 		await appendLimenLog(job.jobDir, `remote host: not loading ${extras.length} seat extension path(s)`);
 	}
 	const secrets = [account, github?.token ?? ""].filter((secret) => secret !== "");
-	return author ? { secrets, author } : { secrets };
+	return {
+		secrets,
+		...(author ? { author } : {}),
+		...(github ? { githubRepo: github.repo } : {}),
+	};
 }
 
 async function deliverAccount(job: RemoteJob): Promise<string> {
@@ -151,7 +162,9 @@ async function deliverAccount(job: RemoteJob): Promise<string> {
 	return account.token;
 }
 
-async function deliverGithub(job: RemoteJob): Promise<{ token: string; name?: string; email?: string } | undefined> {
+async function deliverGithub(
+	job: RemoteJob,
+): Promise<{ token: string; repo: string; name?: string; email?: string } | undefined> {
 	// `remote get-url` applies insteadOf and can hide the GitHub url the broker must see.
 	const url = spawnSync("git", ["config", "--local", "--get", "remote.origin.url"], {
 		cwd: job.worktree,
@@ -171,7 +184,63 @@ async function deliverGithub(job: RemoteJob): Promise<{ token: string; name?: st
 		job.jobDir,
 		sent.code === 0 ? `seat GitHub token for ${repo} for this job` : `seat GitHub token for ${repo} was not delivered`,
 	);
-	return minted.minted;
+	return { ...minted.minted, repo };
+}
+
+const githubRefreshMs = (): number =>
+	Number(process.env.LIMEN_GITHUB_REFRESH_MS) > 0 ? Number(process.env.LIMEN_GITHUB_REFRESH_MS) : 30 * 60_000;
+
+type Refresh = {
+	readonly mint: (repo: string) => Promise<{ token?: string; detail: string }>;
+	readonly send: (script: string) => Promise<number>;
+	readonly everyMs: number;
+};
+
+/**
+ * A GitHub installation token lasts an hour and a host job can run longer, so its pushes would fail at the end. While
+ * the job runs, mint a new token every half hour and rewrite the file the host's credential helper reads on every use.
+ * Returns the function that stops it. A failed refresh keeps the old token until it expires.
+ */
+export function keepGithubFresh(
+	job: Pick<RemoteJob, "jobDir" | "jobId" | "host">,
+	repo: string,
+	secrets: string[],
+	deps: Refresh = {
+		mint: async (target) => {
+			const minted = await mintHostToken(target, loadHostPool().githubBroker);
+			return { ...(minted.minted ? { token: minted.minted.token } : {}), detail: minted.detail };
+		},
+		send: async (script) => (await shellText(job.host, script, 20_000)).code ?? 1,
+		everyMs: githubRefreshMs(),
+	},
+): () => void {
+	let busy = false;
+	const timer = setInterval(async () => {
+		if (busy) {
+			return;
+		}
+		busy = true;
+		try {
+			const minted = await deps.mint(repo);
+			if (!minted.token) {
+				await appendLimenLog(
+					job.jobDir,
+					`seat GitHub token for ${repo} not refreshed: ${redactSecrets(minted.detail).trim() || "no token"}`,
+				);
+			} else if ((await deps.send(githubInstallScript(job.jobId, minted.token))) === 0) {
+				secrets.push(minted.token);
+				await appendLimenLog(job.jobDir, `seat GitHub token for ${repo} refreshed`);
+			} else {
+				await appendLimenLog(job.jobDir, `seat GitHub token for ${repo} was not delivered on refresh`);
+			}
+		} catch {
+			// The old token stays in place; the next tick tries again.
+		} finally {
+			busy = false;
+		}
+	}, deps.everyMs);
+	timer.unref();
+	return () => clearInterval(timer);
 }
 
 async function deletePushedBranch(job: RemoteJob): Promise<void> {
