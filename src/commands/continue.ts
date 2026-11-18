@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { herdrAvailable, openWatchTab } from "../integrations/herdr.ts";
 import {
 	claimMember,
@@ -17,6 +17,7 @@ import { hostedAgentName, isTerminal, makeJobId, parseDuration } from "../job/jo
 import { resolveJob } from "../job/lookup.ts";
 import { publishJob } from "../job/publication.ts";
 import { atomicWrite, finalizeJob } from "../job/record.ts";
+import { sessionWarnBytes, sessionWeightWarning } from "../job/session-weight.ts";
 import {
 	addBranchWorktree,
 	branchCommit,
@@ -282,6 +283,14 @@ async function continueJob(args: readonly string[], cwd: string, locked = false,
 	};
 	await launchContinuation(continuation, profile, hosted, membership?.run);
 }
+/** A continue replays the parent's whole transcript; say so when that transcript is large. */
+async function warnHeavySession(parent: ParentJob): Promise<void> {
+	const size = (await stat(`${parent.dir}/session/${parent.session}`).catch(() => undefined))?.size ?? 0;
+	const warning = sessionWeightWarning(size, sessionWarnBytes(process.env.LIMEN_SESSION_WARN_BYTES));
+	if (warning) {
+		console.error(warning);
+	}
+}
 function continueModel(options: ContinueOptions): string {
 	if (options.model) {
 		return options.model;
@@ -410,7 +419,9 @@ async function readParentJob(
 			throw new Error(`continue --engine ${engine} does not match parent engine ${parentEngine}`);
 		}
 	}
-	return { id: parentId, dir: parentDir, worktree, branch, repo, session, engine: parentEngine };
+	const parent = { id: parentId, dir: parentDir, worktree, branch, repo, session, engine: parentEngine };
+	await warnHeavySession(parent);
+	return parent;
 }
 async function assertNoLiveContinuation(root: string, parentId: string, worktree: string): Promise<void> {
 	for (const existing of await readdir(`${root}/.limen/jobs`)) {

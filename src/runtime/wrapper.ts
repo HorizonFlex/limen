@@ -29,6 +29,7 @@ import { setUpJob, worktreeMissing } from "./job-setup.ts";
 import { runRemoteJob } from "./remote-job.ts";
 import { observeToolStall, ownedToolDescendants, type ToolStallWatch, toolStallMs } from "./stalled-tool.ts";
 import { enterStartQueue, waitForStart } from "./start-queue.ts";
+import { startSilenceMs, watchStartSilence } from "./start-silence.ts";
 import { createStreamParser, type StreamEvent } from "./stream.ts";
 import { readWorkerExtensions } from "./worker-extensions.ts";
 
@@ -276,8 +277,16 @@ export async function runInternalJob(): Promise<void> {
 	});
 	// A pipe can cut a multi-byte UTF-8 letter between two chunks; the stream's decoder keeps the cut bytes for the next one.
 	child.stdout?.setEncoding("utf8");
-	child.stdout?.on("data", (chunk: string) => apply(parser.push(chunk)));
+	// An engine that writes nothing at all after it starts would otherwise hold the job until the job timeout.
+	const silence = watchStartSilence(startSilenceMs(process.env.LIMEN_START_SILENCE_MS), (ms) =>
+		exhaust(`no engine output ${Math.round(ms / 1000)}s after start`),
+	);
+	child.stdout?.on("data", (chunk: string) => {
+		silence.heard();
+		apply(parser.push(chunk));
+	});
 	child.stderr?.on("data", (chunk: Buffer | string) => {
+		silence.heard();
 		seen.progress += 1;
 		pending = pending.then(() => appendFile(`${jobDir}/log`, chunk.toString())).catch(failLog);
 	});
@@ -393,6 +402,7 @@ export async function runInternalJob(): Promise<void> {
 		void enqueueSteer(jobDir, text).catch(failLog);
 	}, steerAt);
 	const result = await outcome;
+	silence.stop();
 	clearTimeout(timeout);
 	clearTimeout(deadlineSteer);
 	clearInterval(stallTimer);
