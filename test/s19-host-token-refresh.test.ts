@@ -58,3 +58,27 @@ test("the seat renews the token while the job runs, keeps it out of the log, and
 	assert.match(log, /not refreshed: broker down/);
 	assert.equal(log.includes("token-"), false);
 });
+
+test("a credential helper already configured on the host does not hide the job's token", async () => {
+	const id = `tok2-${process.pid}-${Date.now()}`;
+	const file = ghPath(id);
+	const dir = await mkdtemp(join(tmpdir(), "limen-gitconfig-"));
+	const global = join(dir, "gitconfig");
+	await writeFile(
+		global,
+		'[credential]\n\thelper = "!f() { echo username=old; echo password=stale-host-token; }; f"\n',
+	);
+	try {
+		await writeFile(file, "fresh-job-token\n");
+		const script = `${loadGithub(id, undefined)}\nprintf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill`;
+		const run = spawnSync("bash", ["-c", script], {
+			encoding: "utf8",
+			env: { ...process.env, GIT_CONFIG_GLOBAL: global, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+		});
+		assert.match(run.stdout, /password=fresh-job-token/);
+		assert.doesNotMatch(run.stdout, /stale-host-token/);
+	} finally {
+		await rm(file, { force: true });
+		await rm(dir, { recursive: true, force: true });
+	}
+});

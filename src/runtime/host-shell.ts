@@ -362,19 +362,22 @@ export function loadGithub(jobId: string, author: LaunchScript["author"]): strin
 		: "";
 	// The helper reads the token file each time git asks, so a token the seat rewrites while the job runs is used from
 	// then on (a GitHub installation token lasts one hour; a job may run longer). GH_TOKEN, read once at start, is the
-	// fallback. The helper is tried before a helper already configured on the host, and an ssh GitHub url is fetched
-	// over HTTPS so the token is what pushes. The file is removed with the job's other host files at cleanup.
+	// fallback. The helpers configured on the host are cleared first (an empty helper resets the list): a host helper such
+	// as a keychain would otherwise answer before this one, return the token it stored an hour ago, and hide the refreshed
+	// one. An ssh GitHub url is fetched over HTTPS so the token is what pushes. The file is removed with the job's other host files at cleanup.
 	return `ghfile=${dest}
 if [ -f "$ghfile" ]; then
   GH_TOKEN=$(tr -d '\\n' < "$ghfile")
   export GH_TOKEN
   export GITHUB_TOKEN="$GH_TOKEN"
   export LIMEN_GH_FILE="$ghfile"
-  export GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_COUNT=3
   export GIT_CONFIG_KEY_0=credential.helper
-  export GIT_CONFIG_VALUE_0='!f() { t=$(tr -d "\\n" < "$LIMEN_GH_FILE" 2>/dev/null); [ -n "$t" ] || t=$GH_TOKEN; echo username=x-access-token; echo "password=$t"; }; f'
-  export GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
-  export GIT_CONFIG_VALUE_1=git@github.com:
+  export GIT_CONFIG_VALUE_0=
+  export GIT_CONFIG_KEY_1=credential.helper
+  export GIT_CONFIG_VALUE_1='!f() { t=$(tr -d "\\n" < "$LIMEN_GH_FILE" 2>/dev/null); [ -n "$t" ] || t=$GH_TOKEN; echo username=x-access-token; echo "password=$t"; }; f'
+  export GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf
+  export GIT_CONFIG_VALUE_2=git@github.com:
 fi
 ${authorLines}`;
 }
