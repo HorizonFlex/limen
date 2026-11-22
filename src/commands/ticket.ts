@@ -27,7 +27,7 @@ async function directories(path: string): Promise<string[]> {
 	return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
-/** The folder slug: the title's slug cut at the last `-` that keeps it at most `max` characters; a longer first word is cut at `max`. */
+/** The title's slug cut at the last `-` that keeps it at most `max` characters; a longer first word is cut at `max`. */
 function folderSlug(title: string, max = 60): string {
 	const slug = title
 		.toLowerCase()
