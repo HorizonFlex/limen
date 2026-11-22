@@ -1,9 +1,9 @@
 // S6 · Spec keeper. One plant: ticket numbers, place ids, the keeper's start rules and ticket-author path
 // resolution, all through the real CLI. The strict ticket gate is s5's land refusal and u1's diagnostics.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { git, jobDir, jobFile, limen, plant, release, spawnJob, TICKET, waitJob } from "./plant.ts";
 
@@ -18,14 +18,36 @@ await mkdir(join(p.root, "spec/features/done/2026-09/F004-x"), { recursive: true
 git(p.root, "branch", "limen/f007-y");
 const worker = spawnJob(p, "block\ncommit", ["--label", "F009 keeper proof"]);
 
-test("ticket new refuses an unknown place id before any file exists, then takes the number past folders, limen branches and job labels", () => {
+test("ticket new refuses an unknown place id, cuts the slug at a word to 60 characters, and numbers past every ref", () => {
 	const before = lane("planned");
 	const refused = limen(p, ["ticket", "new", "y", "--touches", "nope"]);
 	assert.match(`${refused.status} ${refused.stderr}`, /^1 .*nope/s);
 	assert.deepEqual(lane("planned"), before);
-	const made = limen(p, ["ticket", "new", "x", "--touches", "demo.place"]);
-	assert.equal(made.stdout, "spec/features/planned/F010-x/ticket.md\n", made.stderr);
-	assert.ok(existsSync(join(p.root, made.stdout.trim())));
+	const ticket = (title: string, cwd = p.root, ...flags: string[]) => {
+		const made = limen(p, ["ticket", "new", title, ...flags], { cwd });
+		const text = readFileSync(join(cwd, made.stdout.trim()), "utf8");
+		assert.match(text, new RegExp(`^# F\\d+ · ${title}$`, "m"), made.stderr);
+		return { folder: dirname(made.stdout), number: Number(/\/F(\d+)-/.exec(made.stdout)?.[1]) };
+	};
+	// Past folders, limen branch names and job labels.
+	assert.equal(ticket("x", p.root, "--touches", "demo.place").folder, "spec/features/planned/F010-x");
+	// A cut at 60 would end mid-word; a boundary right after character 60 keeps all 60; one long word is cut at 60.
+	const slug = (title: string) => ticket(title).folder.replace(/^.*\/F\d+-/, "");
+	assert.equal(slug("seventh ".repeat(8).trim()), "seventh-".repeat(7).slice(0, -1));
+	assert.equal(slug(`${"a".repeat(29)} ${"b".repeat(30)} c`), `${"a".repeat(29)}-${"b".repeat(30)}`);
+	assert.equal(slug(`${"z".repeat(80)} tail`), "z".repeat(60));
+	// The first ticket's folder lives only on a remote's ref, the second only on a local branch.
+	const [one, two] = [join(p.parent, "tree-one"), join(p.parent, "tree-two")];
+	git(p.root, "worktree", "add", "-q", "--detach", one, "main");
+	git(p.root, "worktree", "add", "-q", "-b", "ticket-two", two, "main");
+	const first = ticket("first", one).number;
+	git(one, "add", "spec");
+	git(one, "commit", "-q", "-m", "first ticket");
+	git(one, "update-ref", "refs/remotes/origin/one", "HEAD");
+	assert.equal(ticket("second", two).number, first + 1);
+	git(two, "add", "spec");
+	git(two, "commit", "-q", "-m", "second ticket");
+	assert.equal(ticket("third", one).number, first + 2);
 });
 
 test("picture build --dir takes a plant root from any folder and stops on a folder with no map", () => {
@@ -37,8 +59,7 @@ test("picture build --dir takes a plant root from any folder and stops on a fold
 
 test("keeper refuses a running job, then starts on a new branch at the candidate tip", async () => {
 	const refused = limen(p, ["keeper", TICKET, "--job", worker, ...ROUTE]);
-	assert.equal(refused.status, 1);
-	assert.match(refused.stderr, new RegExp(worker));
+	assert.match(`${refused.status} ${refused.stderr}`, new RegExp(`^1 .*${worker}`, "s"));
 	assert.deepEqual([git(p.root, "branch", "--list", "limen/keeper-*"), jobFile(p, worker, "state")], ["", "running"]);
 
 	await release(jobDir(p, worker));
@@ -55,8 +76,7 @@ test("keeper refuses a running job, then starts on a new branch at the candidate
 	assert.ok(jobFile(p, keeper, "task.md").split("\n").includes(`Ticket: ${TICKET}`));
 	assert.deepEqual([git(p.root, "rev-parse", branch), waitJob(p, keeper)], [tip, "done"]);
 	const again = limen(p, ["keeper", TICKET, "--job", worker, ...ROUTE]);
-	assert.equal(again.status, 1);
-	assert.match(again.stderr, new RegExp(keeperBranch));
+	assert.match(`${again.status} ${again.stderr}`, new RegExp(`^1 .*${keeperBranch}`, "s"));
 });
 
 test("ticket-author resolves aliased paths and invents no author for others", async () => {
@@ -73,7 +93,6 @@ test("ticket-author resolves aliased paths and invents no author for others", as
 	}
 	for (const path of ["spec/features/planned/F010-x/ticket.md", "missing.md", "spec", "../outside.md"]) {
 		const result = limen(p, ["ticket-author", path]);
-		assert.equal(result.status, 1, path);
-		assert.equal(result.stdout, "", path);
+		assert.deepEqual([result.status, result.stdout], [1, ""], path);
 	}
 });

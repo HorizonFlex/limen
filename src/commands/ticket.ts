@@ -27,8 +27,60 @@ async function directories(path: string): Promise<string[]> {
 	return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
-async function nextFeatureNumber(root: string, plant: string): Promise<number> {
+/** The title's slug cut at the last `-` that keeps it at most `max` characters; a longer first word is cut at `max`. */
+function folderSlug(title: string, max = 60): string {
+	const slug = title
+		.toLowerCase()
+		.normalize("NFKD")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "");
+	if (slug.length <= max) {
+		return slug;
+	}
+	const cut = slug.slice(0, max + 1).lastIndexOf("-");
+	return cut > 0 ? slug.slice(0, cut) : slug.slice(0, max);
+}
+
+const FOLDER_NUMBER = /^F(\d+)-/;
+
+/** The highest ticket number in the folders of spec/features on every local branch and every remote's ref. */
+function highestOnRefs(root: string): { highest: number; branches: string } {
+	const listed =
+		spawnSync("git", ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/remotes"], {
+			cwd: root,
+			encoding: "utf8",
+		}).stdout ?? "";
+	const refs = listed
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => ({ commit: line.slice(0, line.indexOf(" ")), name: line.slice(line.indexOf(" ") + 1) }));
 	let highest = 0;
+	for (const commit of new Set(refs.map((ref) => ref.commit))) {
+		const tree =
+			spawnSync("git", ["ls-tree", "-r", "-d", "--name-only", commit, "--", "spec/features"], {
+				cwd: root,
+				encoding: "utf8",
+				maxBuffer: 64 * 1024 * 1024,
+			}).stdout ?? "";
+		for (const path of tree.split("\n")) {
+			const match = FOLDER_NUMBER.exec(path.slice(path.lastIndexOf("/") + 1));
+			if (match) {
+				highest = Math.max(highest, Number(match[1]));
+			}
+		}
+	}
+	// Local and remote `limen/*` branch names, for a number that has a branch before it has a folder.
+	const branches = refs
+		.map((ref) => ref.name)
+		.filter((name) => /^refs\/(heads|remotes\/[^/]+)\/limen\//.test(name))
+		.join("\n");
+	return { highest, branches };
+}
+
+/** One above the highest ticket number in this checkout, on every branch and remote ref, and in every job label. */
+async function nextFeatureNumber(root: string, plant: string): Promise<number> {
+	const refs = highestOnRefs(root);
+	let highest = refs.highest;
 	const base = join(root, "spec", "features");
 	for (const lane of ["planned", "active", "done", "dropped"]) {
 		const lanePath = join(base, lane);
@@ -38,26 +90,21 @@ async function nextFeatureNumber(root: string, plant: string): Promise<number> {
 				: [lanePath];
 		for (const parent of parents) {
 			for (const name of await directories(parent)) {
-				const match = /^F(\d+)-/.exec(name);
+				const match = FOLDER_NUMBER.exec(name);
 				if (match) {
 					highest = Math.max(highest, Number(match[1]));
 				}
 			}
 		}
 	}
-	// A number can live only on a branch or in a job before its folder reaches this checkout (the two F778 tickets).
-	const branches =
-		spawnSync("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads/limen/"], {
-			cwd: root,
-			encoding: "utf8",
-		}).stdout ?? "";
+	// A number can live only in a branch name or a job before its folder is committed (the two F778 tickets).
 	const jobs = join(plant, ".limen", "jobs");
 	const labels = await Promise.all(
 		(await directories(jobs)).map(
 			async (id) => `${id}\n${await readFile(join(jobs, id, "label"), "utf8").catch(() => "")}`,
 		),
 	);
-	for (const match of `${branches}\n${labels.join("\n")}`.matchAll(/\bf(\d{3,4})\b/gi)) {
+	for (const match of `${refs.branches}\n${labels.join("\n")}`.matchAll(/\bf(\d{3,4})\b/gi)) {
 		highest = Math.max(highest, Number(match[1]));
 	}
 	return highest + 1;
@@ -90,11 +137,7 @@ export async function ticketCommand(args: readonly string[], cwd: string): Promi
 	if (!touches.every((id) => PLACE_ID.test(id)) || new Set(touches).size !== touches.length) {
 		throw new Error(HELP);
 	}
-	const slug = title
-		.toLowerCase()
-		.normalize("NFKD")
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-|-$/g, "");
+	const slug = folderSlug(title);
 	if (!slug) {
 		throw new Error(HELP);
 	}
