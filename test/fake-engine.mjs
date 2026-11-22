@@ -7,7 +7,15 @@
 // (variable names), fake-task.txt, fake-system.txt (system prompt after before_agent_start), fake-context.txt (the hidden
 // context messages before_agent_start returned), fake-events.jsonl, and one transcript line per run in --session-dir.
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	createReadStream,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -114,7 +122,9 @@ async function block() {
 }
 
 for (let index = args.indexOf("--extension"); index >= 0; index = args.indexOf("--extension", index + 1)) {
-	await (await import(args[index + 1])).default(api);
+	const extension = args[index + 1];
+	const file = extension && statSync(extension).isDirectory() ? join(extension, "index.js") : extension;
+	await (await import(file)).default(api);
 }
 await fire("session_start", {});
 const started = await fire("before_agent_start", { prompt: task, systemPrompt: preamble });
@@ -151,6 +161,8 @@ for (const line of task.split("\n")) {
 		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)"], { detached: true, stdio: "ignore" });
 		child.unref();
 		writeFileSync(join(dir, "fake-orphan"), String(child.pid));
+	} else if (word === "note") {
+		writeFileSync(join(dir, "note.md"), `${value}\n`);
 	} else if (word === "finish") {
 		await tools.get("finish")?.execute("fake", { handoff: value }, undefined, undefined, context);
 	} else if (word.startsWith("/")) {

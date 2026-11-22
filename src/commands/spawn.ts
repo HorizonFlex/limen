@@ -43,6 +43,17 @@ import {
 	preflightEngine,
 	resolveSpawnEngine,
 } from "../runtime/engine.ts";
+import { ACCOUNT_FILE, chooseHostAccount } from "../runtime/host-account.ts";
+import { INPUTS_FILE, validateInputs } from "../runtime/host-inputs.ts";
+import {
+	assertHostCanAuth,
+	assertHostEngine,
+	assertHostProject,
+	hostByAlias,
+	hostModel,
+	loadHostPool,
+	validateRemoteLaunch,
+} from "../runtime/hosts.ts";
 import { liveJob } from "../runtime/reap.ts";
 import { DEFAULT_PRIORITY, parsePriority, queuedLine } from "../runtime/start-queue.ts";
 import { normalizeWorkerExtensions } from "../runtime/worker-extensions.ts";
@@ -70,6 +81,10 @@ type SpawnOptions = {
 	role?: string;
 	engine?: string;
 	extensions: string[];
+	host?: string;
+	inputs?: string[];
+	/** Seat account a host job bills: a name, or `auto` for the one with the most room. Recorded as the resolved name. */
+	account?: string;
 };
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export function resolvePreamble(root: string, role: string): string {
@@ -164,28 +179,38 @@ type SpawnedJob = {
 async function spawnJob(args: readonly string[], cwd: string, group?: SpawnGroup): Promise<void> {
 	const parsed = parseSpawnArgs(args);
 	const profile = resolveSpawnEngine(parsed.engine);
+	validateRemoteLaunch(loadHostPool(), parsed.host, {
+		tab: parsed.tab,
+		grouped: group !== undefined,
+		engine: profile.id,
+	});
 	if (profile.id === "devin") {
 		preflightDevin(parsed, group !== undefined);
 	}
 	await checkLaunchAuthority(parsed, group);
 	const hosted = chooseHostedLaunch(parsed, group !== undefined);
 	const loaded = await readSpawnTask(parsed.task, parsed.taskFile, cwd);
+	const inputs = await validateInputs(parsed.inputs ?? [], parsed.host, cwd);
+	const account = await chooseHostAccount(parsed.account, parsed.host);
 	const options = {
 		...parsed,
+		...(inputs.length > 0 ? { inputs } : {}),
+		...(account ? { account } : {}),
 		task: loaded.text,
 		label: parsed.label ?? (loaded.text.trim().split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "job"),
 	};
-	// Devin's API takes a mode, not a model; without --model the organization's default mode runs.
-	const model = profile.id === "devin" ? options.model : (options.model ?? defaultModel(options.review));
+	// Devin's API takes a mode, not a model. A host's own model wins over the seat default when --model is omitted.
+	const model =
+		profile.id === "devin" ? options.model : (options.model ?? hostModel(options.host) ?? defaultModel(options.review));
 	const extensions = await launchExtensions(group, options.extensions, cwd, profile.id);
+	const place = resolveSpawnPlace(cwd, group, options.repo);
 	if (profile.id !== "devin") {
-		preflightEngine(profile, model, options.provider);
+		await preflightSpawn(options.host, profile, model, options.provider, place.repository);
 	}
 	const notificationSession = currentNotificationSession();
 	const coordinatorTab = process.env.HERDR_TAB_ID?.trim();
 	// A group member never subscribes a session, so its pane stays recorded even under Pi: it is the lead's route when the group hook is not running.
 	const coordinatorPane = herdrWakePane(group ? undefined : notificationSession);
-	const place = resolveSpawnPlace(cwd, group, options.repo);
 	const task = await spawnTaskText(loaded, options.repo, place);
 	await recordSpawnedJob({
 		cwd,
@@ -203,6 +228,23 @@ async function spawnJob(args: readonly string[], cwd: string, group?: SpawnGroup
 		task,
 	});
 }
+async function preflightSpawn(
+	host: string | undefined,
+	profile: EngineProfile,
+	model: string | undefined,
+	provider: string | undefined,
+	project: string,
+): Promise<void> {
+	if (!host) {
+		preflightEngine(profile, model, provider);
+		return;
+	}
+	const found = hostByAlias(loadHostPool(), host);
+	await assertHostProject(found, project);
+	await assertHostCanAuth(found, provider, model);
+	await assertHostEngine(found, model, provider);
+}
+
 /** Outside a group no job may claim the owner-facing lead; a group launch keeps its recorded route and branches. */
 async function checkLaunchAuthority(parsed: SpawnOptions, group: SpawnGroup | undefined): Promise<void> {
 	if (!group) {
@@ -436,6 +478,12 @@ async function publishSpawnedJob(launch: SpawnLaunch, record: SpawnRecord): Prom
 		...(candidate ? { candidate } : {}),
 		...(finishConfig ? { finishConfig } : {}),
 	});
+	if (launch.options.account) {
+		await writeFile(`${record.jobDir}/${ACCOUNT_FILE}`, `${launch.options.account}\n`);
+	}
+	if (launch.options.inputs?.length) {
+		await writeFile(`${record.jobDir}/${INPUTS_FILE}`, `${launch.options.inputs.join("\n")}\n`);
+	}
 }
 /** Marks the job running, then starts it in a Herdr pane or as a detached wrapper. */
 async function launchSpawnedJob(launch: SpawnLaunch, job: SpawnedJob): Promise<void> {
@@ -475,7 +523,14 @@ async function startHostedJob(launch: SpawnLaunch, job: SpawnedJob, versions: Pr
 async function startDetachedJob(launch: SpawnLaunch, job: SpawnedJob, versions: Promise<void>): Promise<void> {
 	const { options, model, group } = launch;
 	const { jobDir, id, root } = job;
-	await openWatchTab({ jobDir, label: options.label, cwd: root, logPath: `${jobDir}/log`, role: job.role });
+	await openWatchTab({
+		jobDir,
+		label: options.label,
+		cwd: root,
+		logPath: `${jobDir}/log`,
+		role: job.role,
+		...(options.host ? { host: options.host } : {}),
+	});
 	const environment: Record<string, string> = {
 		LIMEN_JOB_DIR: jobDir,
 		LIMEN_WORKTREE: job.worktree,
@@ -499,6 +554,8 @@ async function startDetachedJob(launch: SpawnLaunch, job: SpawnedJob, versions: 
 	if (options.timeoutMs) {
 		environment.LIMEN_TIMEOUT_MS = String(options.timeoutMs);
 	}
+	// Empty clears a LIMEN_HOST inherited from the spawner's shell, so only --host leaves the seat.
+	environment.LIMEN_HOST = options.host ?? "";
 	let wrapperPid: number;
 	try {
 		wrapperPid = await launchWrapper(environment);
@@ -659,6 +716,9 @@ const SPAWN_FLAGS = {
 	base: { type: "string" },
 	head: { type: "string" },
 	extension: { type: "string", multiple: true },
+	host: { type: "string" },
+	input: { type: "string", multiple: true },
+	account: { type: "string" },
 } as const;
 
 function parseSpawnArgs(args: readonly string[]): SpawnOptions {
@@ -685,6 +745,7 @@ function parseSpawnArgs(args: readonly string[]): SpawnOptions {
 			"engine",
 			"base",
 			"head",
+			"host",
 		],
 	});
 	const role = values.role?.trim();
@@ -704,6 +765,8 @@ function parseSpawnArgs(args: readonly string[]): SpawnOptions {
 	const out: SpawnOptions = {
 		task: taskFile ? "" : task.join(" "),
 		extensions: values.extension ?? [],
+		...(values.input?.length ? { inputs: values.input } : {}),
+		...(values.account ? { account: values.account } : {}),
 		review: values.review ?? false,
 		tab: values.tab ?? false,
 		detached: values.detached ?? false,
@@ -714,7 +777,7 @@ function parseSpawnArgs(args: readonly string[]): SpawnOptions {
 		...(timeoutMs ? { timeoutMs } : {}),
 		...(priority ? { priority } : {}),
 	};
-	for (const key of ["prepare", "branch", "base", "head", "repo", "model", "provider", "thinking"] as const) {
+	for (const key of ["prepare", "branch", "base", "head", "repo", "model", "provider", "thinking", "host"] as const) {
 		const value = values[key];
 		if (value) {
 			out[key] = value;

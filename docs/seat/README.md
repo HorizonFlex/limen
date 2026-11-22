@@ -38,6 +38,10 @@ ntfy is the fallback when Moshi is not in play:
 
 Drop-in: `User`, `WorkingDirectory` = the project, `PATH` that includes `limen`. `systemctl enable --now limen-prune.timer`.
 
+## Stack doctor
+
+Optional, off until you install it. A read-only `limen doctor` report, a Pi agent that may repair only an allowlist, and a launchd job every 30 minutes that starts the agent only when the report has findings. The plist is not loaded by this package. Steps: [stack-doctor.md](stack-doctor.md). Lessons the coordinators read: [ops-knowledge.md](../ops-knowledge.md).
+
 ## Picture
 
 Optional, per project, off by default. After the coordinator has started the first architecture map by hand, run `limen picture watch on --engine E --provider P --model M --thinking T` once from the project's primary checkout on the seat, with the board's picture engine, provider, model, and reasoning. It installs a Git hook, not a timer. Each move of the top branch starts one background `limen picture tick`. A move with no structural or cited code change since the map's revision prints nothing and calls no model. `limen picture watch off` removes it. A seat that still runs the retired `limen-picture.timer` should disable it: `systemctl disable --now limen-picture.timer`.

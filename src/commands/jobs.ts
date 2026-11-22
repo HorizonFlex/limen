@@ -4,6 +4,7 @@ import { inspectFinishWebhook } from "../integrations/finish-receipt.ts";
 import { hostedAgentStatus } from "../integrations/herdr.ts";
 import { derivePulse, type Job, type Pulse, parseJob, producedNothing, renderJob } from "../job/job.ts";
 import { resolveJob } from "../job/lookup.ts";
+import { jobPlace } from "../job/place.ts";
 import { modelLine, readSessionUsage, tokenLine } from "../job/usage.ts";
 import {
 	colorWanted,
@@ -27,7 +28,7 @@ type Selection = "snapshot" | "running" | "all" | { readonly prefix: string } | 
 type Ordered = ReadonlyArray<readonly [string, string, string]>;
 
 export async function jobsCommand(args: readonly string[], cwd: string): Promise<void> {
-	const selection = parseJobsArgs(args);
+	const { selection, json } = parseJobsArgs(args);
 	const tty = process.stdout.isTTY === true;
 	const human = resolveView(process.env.LIMEN_VIEW, tty) === "human";
 	const paint = paintWhen(human && colorWanted(tty, process.env.NO_COLOR, process.env.TERM));
@@ -43,15 +44,21 @@ export async function jobsCommand(args: readonly string[], cwd: string): Promise
 	if (typeof selection === "object" && "detail" in selection) {
 		const { id } = await resolveJob(cwd, selection.detail, "read");
 		const loaded = await renderJobDirectory(root, jobsRoot, id, "detail");
-		console.log(human ? humanDetail(loaded.record, paint) : loaded.compact);
+		console.log(
+			json ? JSON.stringify(jobJson(loaded.record)) : human ? humanDetail(loaded.record, paint) : loaded.compact,
+		);
 		return;
 	}
 	const ids = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 	if (ids.length === 0) {
-		console.log("no jobs");
+		console.log(json ? "[]" : "no jobs");
 		return;
 	}
 	const order = await orderedJobs(ids, jobsRoot);
+	if (json) {
+		await printJobJson(root, jobsRoot, order, selection);
+		return;
+	}
 	if (typeof selection === "object") {
 		await printLabelledJobs(root, jobsRoot, order, selection.prefix, human ? paint : undefined);
 		return;
@@ -179,10 +186,55 @@ async function printJobRows(
 	}
 	console.log(lines.join("\n"));
 }
+async function printJobJson(
+	root: string,
+	jobsRoot: string,
+	order: Ordered,
+	selection: "snapshot" | "running" | "all" | { readonly prefix: string },
+): Promise<void> {
+	const labels =
+		typeof selection === "object" ? await Promise.all(order.map(([id]) => text(`${jobsRoot}/${id}/label`))) : [];
+	const shown = order.filter(([id, state], index) => {
+		if (typeof selection === "object") {
+			return (labels[index] || id).startsWith(selection.prefix);
+		}
+		return selection !== "running" || state === "running";
+	});
+	const records = await Promise.all(
+		shown.map(async ([id]) => (await renderJobDirectory(root, jobsRoot, id, "row")).record),
+	);
+	console.log(JSON.stringify(records.map(jobJson)));
+}
+function jobJson(record: JobRecord): {
+	readonly id: string;
+	readonly label?: string;
+	readonly state?: string;
+	readonly branch?: string;
+	readonly host: string;
+	readonly elapsedMs?: number;
+	readonly invalid?: string;
+} {
+	const job = record.job;
+	return {
+		id: record.id,
+		...(job ? { label: job.label, state: job.phase, branch: job.branch } : {}),
+		host: record.host ?? jobPlace(undefined),
+		...(record.elapsedMs !== undefined ? { elapsedMs: record.elapsedMs } : {}),
+		...(record.invalid ? { invalid: record.invalid } : {}),
+	};
+}
 async function finishedAt(jobDir: string): Promise<number> {
 	return Date.parse(await text(`${jobDir}/finished-at`)) || (await optionalStat(`${jobDir}/state`))?.mtimeMs || 0;
 }
-function parseJobsArgs(args: readonly string[]): Selection {
+function parseJobsArgs(args: readonly string[]): { readonly selection: Selection; readonly json: boolean } {
+	const json = args.includes("--json");
+	if (args.filter((arg) => arg === "--json").length > 1) {
+		throw new Error("jobs --json once");
+	}
+	const rest = args.filter((arg) => arg !== "--json");
+	return { selection: parseJobsSelection(rest), json };
+}
+function parseJobsSelection(args: readonly string[]): Selection {
 	if (args[0] === "--label") {
 		if (args.length !== 2 || !args[1] || args[1].startsWith("--")) {
 			throw new Error("jobs --label requires a prefix");
@@ -191,7 +243,7 @@ function parseJobsArgs(args: readonly string[]): Selection {
 	}
 	if (args.length > 1) {
 		throw new Error(
-			"jobs accepts no argument, --running, --active, --all, --label <prefix>, or one job id, suffix, or label",
+			"jobs accepts no argument, --json, --running, --active, --all, --label <prefix>, or one job id, suffix, or label",
 		);
 	}
 	const arg = args[0];
@@ -236,6 +288,7 @@ type JobFields = {
 	readonly parent: string;
 	readonly engine: string;
 	readonly stopReason: string;
+	readonly host: string;
 };
 /** Files beside the job fields. Detail-only files stay empty in the row and human views. */
 type JobEvidence = {
@@ -328,8 +381,9 @@ async function readJobFields(jobDir: string): Promise<JobFields> {
 		parent = "",
 		engine = "",
 		stopReason = "",
+		host = "",
 	] = await Promise.all(
-		"state label branch repo pid started-at finished-at tool-calls last-tool activity hosted candidate advisory parent engine stop-reason"
+		"state label branch repo pid started-at finished-at tool-calls last-tool activity hosted candidate advisory parent engine stop-reason host"
 			.split(" ")
 			.map((field) => (field === "state" ? shownState(jobDir) : text(`${jobDir}/${field}`))),
 	);
@@ -350,6 +404,7 @@ async function readJobFields(jobDir: string): Promise<JobFields> {
 		parent,
 		engine,
 		stopReason,
+		host,
 	};
 }
 async function readJobEvidence(
@@ -433,6 +488,7 @@ async function renderReadableJob(loaded: LoadedJob): Promise<{ compact: string; 
 		...(evidence.openChecks ? { openChecks: true } : {}),
 		diffstat,
 		logTail: log.tail,
+		place: jobPlace(fields.host),
 	});
 	const facts: JobFacts = { job, startedAt, observedAt, agentStatus, pulse, queue, recordedTools, empty, diffstat };
 	return { compact: [rendered, ...jobBlocks(loaded, facts)].join("\n"), record: jobRecord(loaded, facts) };
@@ -465,6 +521,9 @@ function jobBlocks(loaded: LoadedJob, facts: JobFacts): string[] {
 	}
 	if (fields.engine && fields.engine !== "pi") {
 		blocks.push(`  engine ${displayed(fields.engine, detailed)}`);
+	}
+	if (fields.host) {
+		blocks.push(`  host ${displayed(fields.host, detailed)}`);
 	}
 	if (evidence.model) {
 		blocks.push(`  model ${evidence.model}`);
@@ -522,6 +581,7 @@ function jobRecord(loaded: LoadedJob, facts: JobFacts): JobRecord {
 		...(evidence.spawnedBy ? { spawnedBy: evidence.spawnedBy } : {}),
 		...(fields.candidate ? { candidate: fields.candidate } : {}),
 		...(fields.hosted ? { hosted: true } : {}),
+		host: jobPlace(fields.host),
 		...(agentStatus ? { agentStatus } : {}),
 		...(running && evidence.warning ? { advisory: evidence.warning } : {}),
 		...recordedEvidence(loaded, facts.diffstat),

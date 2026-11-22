@@ -1,4 +1,6 @@
 import { appendFile, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { basename } from "node:path";
+import { triggerStackDoctor } from "../doctor/trigger.ts";
 import { promptCoordinator } from "../integrations/coordinator-wake.ts";
 import { deliverFinishWebhook } from "../integrations/finish-webhook.ts";
 import { settleJobTab } from "../integrations/herdr.ts";
@@ -56,6 +58,9 @@ export async function finalizeJob(
 		inbox.length ? `${state}: ${detail}; ${inbox.length} steer(s) never delivered` : `${state}: ${detail}`,
 	).catch(() => {});
 	await atomicWrite(`${jobDir}/state`, `${state}\n`);
+	if (state === "failed") {
+		triggerStackDoctor(basename(jobDir));
+	}
 	await rm(`${jobDir}/ownership-uncertainty`, { force: true });
 	await rm(`${jobDir}/queued`, { force: true });
 	const group = await textFile(`${jobDir}/group`);

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { herdrAvailable, openWatchTab } from "../integrations/herdr.ts";
 import {
 	claimMember,
@@ -17,6 +17,7 @@ import { hostedAgentName, isTerminal, makeJobId, parseDuration } from "../job/jo
 import { resolveJob } from "../job/lookup.ts";
 import { publishJob } from "../job/publication.ts";
 import { atomicWrite, finalizeJob } from "../job/record.ts";
+import { sessionWarnBytes, sessionWeightWarning } from "../job/session-weight.ts";
 import {
 	addBranchWorktree,
 	branchCommit,
@@ -41,6 +42,15 @@ import {
 	preflightEngine,
 	resolveSpawnEngine,
 } from "../runtime/engine.ts";
+import {
+	assertHostCanAuth,
+	assertHostEngine,
+	assertHostProject,
+	hostByAlias,
+	hostModel,
+	loadHostPool,
+	validateRemoteLaunch,
+} from "../runtime/hosts.ts";
 import { jobPriority, parsePriority, queuedLine } from "../runtime/start-queue.ts";
 import { normalizeWorkerExtensions, readWorkerExtensions } from "../runtime/worker-extensions.ts";
 import { launchWrapper } from "../runtime/wrapper.ts";
@@ -76,6 +86,7 @@ type ContinueOptions = {
 	readonly selected: readonly string[];
 	readonly query: string;
 	readonly instruction: string;
+	readonly host: string | undefined;
 };
 function parseContinueArgs(args: readonly string[]): ContinueOptions {
 	const { values, positionals } = parseFlags(
@@ -93,11 +104,12 @@ function parseContinueArgs(args: readonly string[]): ContinueOptions {
 			timeout: { type: "string" },
 			priority: { type: "string" },
 			extension: { type: "string", multiple: true },
+			host: { type: "string" },
 		} as const,
 		{
 			unknown: (word) => `unknown continue option ${word}`,
 			missing: (flag) => `${flag} requires a value`,
-			dashValues: ["label", "model", "provider", "thinking", "engine", "timeout", "priority"],
+			dashValues: ["label", "model", "provider", "thinking", "engine", "timeout", "priority", "host"],
 			endOfFlags: false,
 		},
 	);
@@ -130,6 +142,7 @@ function parseContinueArgs(args: readonly string[]): ContinueOptions {
 		selected: values.extension ?? [],
 		query,
 		instruction,
+		host: values.host?.trim() || undefined,
 	};
 }
 type ParentJob = {
@@ -176,6 +189,7 @@ type Continuation = {
 	readonly versions: Promise<void>;
 	readonly group: ContinuationGroup | undefined;
 	readonly timeoutMs: number | undefined;
+	readonly host: string | undefined;
 };
 /** True for a Herdr pane, false for a detached wrapper. Only --tab hosts; a group member without a mode flag keeps Herdr's pane. */
 function chooseHostedContinue(options: ContinueOptions, grouped: boolean): boolean {
@@ -191,8 +205,8 @@ function chooseHostedContinue(options: ContinueOptions, grouped: boolean): boole
 }
 async function continueJob(args: readonly string[], cwd: string, locked = false, round?: number): Promise<void> {
 	const options = parseContinueArgs(args);
-	const { review, label, model, provider, thinking } = options;
-	const chosenModel = model ?? defaultModel(review);
+	const { review, label, provider, thinking } = options;
+	const chosenModel = continueModel(options);
 
 	// A job that continues from its own worktree resolves jobs in its canonical root.
 	const inherited = workspaceRoot(cwd) ? undefined : inheritedPlanning(repoRoot(cwd));
@@ -209,8 +223,10 @@ async function continueJob(args: readonly string[], cwd: string, locked = false,
 	}
 	const parent = await readParentJob(root, parentId, parentDir, membership, options.engine);
 	const profile = engineProfile(parent.engine);
+	validateRemoteLaunch(loadHostPool(), options.host, remoteLaunch(options, membership !== undefined, profile.id));
 	const extensions = await continuationExtensions(parentDir, membership, options.selected, cwd, profile.id);
-	preflightEngine(profile, chosenModel, provider);
+	const repository = parent.repo ? workspaceRepository(root, parent.repo) : root;
+	await preflightContinuation(options, profile, chosenModel, provider, repository);
 	const source = recordedPlanningSource(parentDir);
 	const followUp = await continuationTask(root, parentDir, options.instruction, source);
 	const finalLabel = label ?? `${(await text(`${parentDir}/label`)) || parentId} · continue`;
@@ -222,7 +238,6 @@ async function continueJob(args: readonly string[], cwd: string, locked = false,
 	const member = membership?.member
 		? await claimMember(membership.run, membership.member.team, slot, id, parentId, round)
 		: undefined;
-	const repository = parent.repo ? workspaceRepository(root, parent.repo) : root;
 	if (!existsSync(parent.worktree) && !branchExists(repository, parent.branch)) {
 		throw new Error(
 			`parent worktree ${parent.worktree} is gone and branch ${parent.branch} is missing in ${repository}; restore that branch before continuing`,
@@ -264,9 +279,50 @@ async function continueJob(args: readonly string[], cwd: string, locked = false,
 		thinking,
 		group,
 		timeoutMs: options.timeoutMs,
+		host: options.host,
 	};
 	await launchContinuation(continuation, profile, hosted, membership?.run);
 }
+/** A continue replays the parent's whole transcript; say so when that transcript is large. */
+async function warnHeavySession(parent: ParentJob): Promise<void> {
+	const size = (await stat(`${parent.dir}/session/${parent.session}`).catch(() => undefined))?.size ?? 0;
+	const warning = sessionWeightWarning(size, sessionWarnBytes(process.env.LIMEN_SESSION_WARN_BYTES));
+	if (warning) {
+		console.error(warning);
+	}
+}
+function continueModel(options: ContinueOptions): string {
+	if (options.model) {
+		return options.model;
+	}
+	return hostModel(options.host) ?? defaultModel(options.review);
+}
+
+async function preflightContinuation(
+	options: ContinueOptions,
+	profile: EngineProfile,
+	model: string | undefined,
+	provider: string | undefined,
+	project: string,
+): Promise<void> {
+	if (!options.host) {
+		preflightEngine(profile, model, provider);
+		return;
+	}
+	const found = hostByAlias(loadHostPool(), options.host);
+	await assertHostProject(found, project);
+	await assertHostCanAuth(found, provider, model);
+	await assertHostEngine(found, model, provider);
+}
+
+function remoteLaunch(
+	options: ContinueOptions,
+	grouped: boolean,
+	engine: string,
+): { readonly tab: boolean; readonly grouped: boolean; readonly engine: string } {
+	return { tab: options.tab, grouped, engine };
+}
+
 /** Marks the published job running, then starts it in a Herdr pane or as a detached wrapper. */
 async function launchContinuation(
 	continuation: Omit<Continuation, "versions">,
@@ -363,7 +419,9 @@ async function readParentJob(
 			throw new Error(`continue --engine ${engine} does not match parent engine ${parentEngine}`);
 		}
 	}
-	return { id: parentId, dir: parentDir, worktree, branch, repo, session, engine: parentEngine };
+	const parent = { id: parentId, dir: parentDir, worktree, branch, repo, session, engine: parentEngine };
+	await warnHeavySession(parent);
+	return parent;
 }
 async function assertNoLiveContinuation(root: string, parentId: string, worktree: string): Promise<void> {
 	for (const existing of await readdir(`${root}/.limen/jobs`)) {
@@ -519,7 +577,14 @@ async function startHostedContinuation(continuation: Continuation): Promise<void
 }
 async function startDetachedContinuation(continuation: Continuation): Promise<void> {
 	const { jobDir, id, label, root, review, parentId, versions, group } = continuation;
-	await openWatchTab({ jobDir, label, cwd: root, logPath: `${jobDir}/log`, role: continuation.role });
+	await openWatchTab({
+		jobDir,
+		label,
+		cwd: root,
+		logPath: `${jobDir}/log`,
+		role: continuation.role,
+		...(continuation.host ? { host: continuation.host } : {}),
+	});
 	const environment: Record<string, string> = {
 		LIMEN_JOB_DIR: jobDir,
 		LIMEN_WORKTREE: continuation.worktree,
@@ -543,6 +608,7 @@ async function startDetachedContinuation(continuation: Continuation): Promise<vo
 	if (continuation.model) {
 		environment.LIMEN_MODEL = continuation.model;
 	}
+	environment.LIMEN_HOST = continuation.host ?? "";
 	let wrapperPid: number;
 	try {
 		wrapperPid = await launchWrapper(environment);

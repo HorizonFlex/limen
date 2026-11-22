@@ -1,10 +1,13 @@
+import { accountsCommand } from "./commands/accounts.ts";
 import { boardCommand } from "./commands/board-view.ts";
 import { closeCommand } from "./commands/close.ts";
 import { continueCommand } from "./commands/continue.ts";
 import { diffCommand } from "./commands/diff.ts";
+import { doctorCommand } from "./commands/doctor.ts";
 import { githubCommand } from "./commands/github.ts";
 import { groupCommand } from "./commands/group.ts";
 import { highlightCommand } from "./commands/highlight.ts";
+import { hostsCommand } from "./commands/host-pool.ts";
 import { initCommand, workspaceCommand } from "./commands/init.ts";
 import { jobsCommand } from "./commands/jobs.ts";
 import { keeperCommand } from "./commands/keeper.ts";
@@ -37,6 +40,9 @@ const COMMANDS = {
 	planning: planningCommand,
 	github: githubCommand,
 	group: groupCommand,
+	hosts: hostsCommand,
+	doctor: doctorCommand,
+	accounts: accountsCommand,
 	spawn: spawnCommand,
 	continue: continueCommand,
 	diff: diffCommand,
@@ -70,6 +76,9 @@ const COMMANDS = {
 	| "continue"
 	| "github"
 	| "group"
+	| "hosts"
+	| "doctor"
+	| "accounts"
 	| "diff"
 	| "steer"
 	| "stop"
@@ -116,6 +125,8 @@ usage:
   limen spawn --engine <engine> --provider <provider> --model <model> --thinking <level> --repo R "Implement FNNN: <outcome>. Ticket: spec/features/active/FNNN-slug/ticket.md" [--label L]
   limen spawn --engine <engine> --provider <provider> --model <model> --thinking <level> --review --detached --branch B --label L [--base SHA] [--head SHA] "Review the FNNN candidate against spec/features/active/FNNN-slug/ticket.md"
   limen spawn --engine devin [--provider macos|linux] [--model MODE] "…" [--label L] [--task-file F|-]  # a Devin cloud session on the job branch; detached only, no --thinking
+  limen spawn --host ALIAS "…" [--review --branch B] [--input PATH ...] [--account NAME|auto]  # Pi on another machine; --input copies seat files the job reads (to LIMEN_INPUTS); the seat keeps .limen, finalizes, and wakes. See docs/hosts.md
+  limen continue <id|suffix|label> "follow-up" --host ALIAS  # same host pool; the seat still owns the job folder
   limen continue <id|suffix|label> "follow-up instruction" [--review] [--label L] [--engine pi|omp] [--provider P] [--model X] [--thinking T] [--tab|--detached] [--priority 1|2|3; default the parent's] [--extension PATH ...; replaces ordinary Pi list, group list stays fixed]
                                   # resume a finished job in its own engine session — full context, same worktree; Herdr default is hosted
   limen steer <id|suffix|label> | --running "correction"
@@ -124,10 +135,15 @@ usage:
   limen land <id|suffix|label> [--onto BRANCH] [--yes] [--keep-open]  # merge a done job onto the current branch and close its active ticket; --keep-open when more slices remain
   limen keeper <ticket-path> (--job ID [--job ID ...] | --group GROUP-ID) [--candidate BRANCH] --engine E --provider P --model M --thinking T [--timeout D]  # after the work: a short job fixes ticket, board and map links on its own branch
   limen stop <id|suffix|label> [reason]
-  limen jobs [--running|--active|--all|--label PREFIX|<id|suffix|label>]
+  limen jobs [--json] [--running|--active|--all|--label PREFIX|<id|suffix|label>]
   limen status [--all]                          # plant inbox: running, candidates to inspect, needs a decision (last 7 days), coordinator tabs
   limen queue                                   # the seat's start queue in start order, and the CPU and memory reading against the gate
   limen prune [--retire [--dry-run]]           # --retire deletes finished, failed, or stopped job records whose branch is landed (ancestor or cherry-pick) or deleted
+  limen hosts check <alias>                    # over ssh: Pi, git ls-remote, Claude auth; the seat account is named, never printed
+  limen doctor [--json|--md]                   # read-only stack report; exit 2 when it has findings. See docs/seat/stack-doctor.md
+  limen doctor notify <slot> <message> [--report file]  # tell the human once; the same text waits LIMEN_DOCTOR_RENOTIFY_HOURS (default 24)
+  limen hosts prune [--dry-run]                # delete origin limen/<id> branches of terminal jobs
+  limen accounts                               # which Claude account is active and which are spent, plus 5h/week usage per account; read it before waiting on a quota reset
   limen rule                                    # the seat-wide rules that hold now
   limen rule set NAME --until 90m|12h|3d|"YYYY-MM-DD HH:MM"|ISO [--start-priority 1|2|3] "text"  # one rule for every coordinator; a set or change pings each live coordinator tab once
   limen rule end NAME [reason]                  # end it now; each live coordinator tab gets one end ping, as at its end time

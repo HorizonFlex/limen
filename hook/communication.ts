@@ -162,6 +162,9 @@ function guidancePrompt(cwd: string, job: boolean): string {
 		parts.push(privatePlanningGuidance(cwd));
 	}
 	if (!job) {
+		parts.push(
+			"Ops knowledge (limen/docs/ops-knowledge.md): read it before you state how a host, a Claude account, /tmp, or a non-interactive PATH works. Do not repeat a claim that file marks stale.",
+		);
 		const shop = readInheritedAgents(cwd);
 		if (shop) {
 			parts.push(shop);

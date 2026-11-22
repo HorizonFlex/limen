@@ -36,6 +36,8 @@ Only paths are retained, not extension source or dependency versions. Later edit
 
 **Devin cloud jobs.** `--engine devin` runs the job as a Devin cloud session: `--provider` names the platform (`macos` or `linux`) and `--model` the Devin mode. The job pushes its branch to `origin`, follows the session into its log, and fast-forwards the worktree from the pushed branch when the session finishes; Devin's last message is the result. It runs detached only: spawn refuses `--tab`, `--thinking` and `--extension`, and `continue` and group teams refuse the engine. `limen stop` and the timeout terminate the session. Credentials, limits and failure reasons: [Devin cloud jobs](setup.md#devin-cloud-jobs).
 
+**Another machine.** `--host ALIAS` on `spawn` or `continue` (including `--review`) runs Pi on a machine from `~/.limen/hosts.json`. The seat still owns the job folder, finalizes, and wakes. With no hosts file, nothing changes. `limen hosts check ALIAS` probes that machine; `limen hosts prune` deletes pushed `limen/<id>` branches. The seat's active Claude account is passed for that job only. Setup, Windows via WSL2, the keychain, and limits: [Host pool](hosts.md). The optional stack doctor reads the same host check and does not change the pool: [Stack doctor](seat/stack-doctor.md).
+
 ### Inspect jobs
 
 Run job commands from the project repository or Limen workspace. Outside either location, Limen names the current directory and tells you where to run. A new repository needs its first commit before `spawn`.
@@ -44,7 +46,7 @@ Read the plant inbox, the job records, and the diff of a job, or open a job in H
 
 ```text
 limen status [--all]
-limen jobs [--running|--active|--all|--label PREFIX|<id|suffix|label>]
+limen jobs [--json] [--running|--active|--all|--label PREFIX|<id|suffix|label>]
 limen diff <id|suffix|label>
 limen open <id|suffix|label>
 ```
@@ -62,11 +64,11 @@ When a webhook target refused a ping with HTTP 401 or 403, the first line after 
 
 In a terminal, `jobs` shows an aligned table for people. Through a pipe, it prints the compact format that tools read. `LIMEN_VIEW=human|compact` selects a view. `NO_COLOR` removes the color.
 
-The default compact `jobs` view lists running jobs and recent empty jobs. It hides empty jobs that ended more than 7 days ago and prints `N older empty jobs hidden`. `limen jobs --all` shows every job. An unknown job ID exits 1 with `no job matches "<id>"`.
+The default compact `jobs` view lists running jobs and recent empty jobs. It hides empty jobs that ended more than 7 days ago and prints `N older empty jobs hidden`. `limen jobs --all` shows every job. An unknown job ID exits 1 with `no job matches "<id>"`. Every jobs line and every `limen status` running, candidate, and decision line ends the place with `· on <alias>` for a host job, or `· on <seat>` for a local one (`mini` when that is the short hostname, otherwise `seat`). `limen jobs --json` prints that selection as JSON; each object has `host`.
 
 `limen jobs <id>` also shows `model`, the provider and model that the session's turns ran, and `tokens`, the turns and the input, output, cache-read and cache-write totals of that job's own turns. When a turn ran a model other than the one spawn recorded in the job's `model` file, the line shows both: `served … · requested …`. This informs; it does not block.
 
-A job in the start queue lists as running with the pulse `queued`, then its wait and the reason: the CPU and memory reading against the gate, or each rule that holds its priority with the rule's end, and the number of jobs ahead. `limen queue` prints the gate, the current reading, and every waiting job of the seat in start order, each held job with the rules that hold it. It samples the load for about two seconds.
+A job in the start queue lists as running with the pulse `queued`, then its wait and the reason: the CPU and memory reading against the gate, or each rule that holds its priority with the rule's end, and the number of jobs ahead. `limen queue` prints the gate, the current reading, and every waiting job of the seat in start order, each held job with the rules that hold it. It samples the load for about two seconds. When `~/.limen/hosts.json` exists it adds one line per host: alias, `reachable` or `unknown`, running jobs over `maxConcurrent`, and whether overflow is on.
 
 A job is starting while `limen spawn` still sets it up: the worktree and the launch. Its record holds the spawn's pid in `starting` from the first moment. `jobs` and `status` list it as running with the pulse `starting`. A job with no state whose spawn process is gone is `ORPHAN`. Spawn prints the job ID as soon as the record exists, and again on its last line. The job's wrapper or hosted supervisor then prunes finished worktrees and runs `--prepare` before the engine starts; the job log records each result and its time. A prepare command has 5 minutes; a plant can change that (see [Limits](jobs.md#limits)). A setup failure after the ID printed marks the job `failed`.
 
