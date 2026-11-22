@@ -137,7 +137,7 @@ usage:
   limen open <id|suffix|label>
   limen close <FNNN>
   limen ticket-author <ticket-path>                 # creation-commit author, following Git renames
-  limen ticket new "what becomes true" [--lane planned|active] [--touches id,id]  # next unused F number across lanes, limen/* branches and job labels
+  limen ticket new "what becomes true" [--lane planned|active] [--touches id,id]  # F number above every lane, local and remote branch, limen/* branch name and job label; slug at most 60 chars
   limen ticket check [BRANCH]                    # land gate on demand: tickets BRANCH adds or changes; run before a hand git merge
   limen ticket done FNNN [FNNN ...]             # landed without limen land: active ticket moves to done/ with a landed date
   limen board [--write]                          # the board with NOW and PROVEN from the lanes and each ticket's jobs; --write rewrites them in spec/build.md
